@@ -1,6 +1,6 @@
 # Card service split (PCI scope reduction)
 
-Status: plan, 2026-11-16. Assumes the `pci-hardening` change: only one-time cards (`CardholderInteractor.chargeCardFor`) ever have details captured, and they are discarded after the fill.
+Status: step 1 done (`CardCharger` port, `LocalCardCharger`); steps 2, 4, 5 in progress; step 3 waits for Miden. Plan written 2026-11-16. Assumes the `pci-hardening` change: only one-time cards (`CardholderInteractor.chargeCardFor`) ever have details captured, and they are discarded after the fill.
 
 ## Goal
 
@@ -94,7 +94,7 @@ Log on both sides, with the idempotency key, every state change and every retry.
 
 ## 5. Migration, each step shippable
 
-1. **Port, in-process.** Add `CardCharger` (`charge(req) → outcome`) in `src/domain/interfaces`. Move the `drive` charge closure, the issue-lite + capture part of `chargeCardFor`, `vault`, and `filler` behind `LocalCardCharger`. `SwapInteractor` deps drop `vault` and `filler`. No behaviour change; existing swap tests must pass unchanged.
+1. **Port, in-process.** *(Done.)* `src/domain/interfaces/CardCharger.ts`, `src/adapters/cardCharger/LocalCardCharger.ts`; the policy is `CardholderInteractor.prepareOneTime` / `settleOneTime`. Add `CardCharger` (`charge(req) → outcome`) in `src/domain/interfaces`. Move the `drive` charge closure, the issue-lite + capture part of `chargeCardFor`, `vault`, and `filler` behind `LocalCardCharger`. `SwapInteractor` deps drop `vault` and `filler`. No behaviour change; existing swap tests must pass unchanged.
 2. **Idempotency record.** Add the `charges` table and the state machine to `LocalCardCharger`; reconcile reads it (section 2). Still one process. Tests: replay at each state, timeout after submit, body-hash mismatch.
 3. **Miden credential split** (section 3 blocker). Main app runs on the restricted credential; issue-lite and full-pan only from the charger's credential.
 4. **Stand up card-service** with the same `LocalCardCharger` code, own DB, KMS-backed vault, network rules, log sink. Main app gets `RemoteCardCharger` behind `CARD_SERVICE_URL`; ship to sandbox, then a percentage of production swaps (payments cannot be shadowed; canary instead).

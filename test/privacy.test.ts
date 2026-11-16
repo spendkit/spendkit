@@ -206,7 +206,7 @@ test("a lost answer from the issue call is flagged for a person, never guessed a
   assert.equal(row.status, "needs_review");
   assert.match(row.detail, /issue answer lost/);
   // The same spend asked again never makes a second card.
-  await assert.rejects(s.app.chargeCardFor(u.p, (await s.pool.query("SELECT spend_id FROM app_spend")).rows[0].spend_id, 500, { needDetails: false }), /needs a person/);
+  await assert.rejects(s.app.chargeCardFor(u.p, (await s.pool.query("SELECT spend_id FROM app_spend")).rows[0].spend_id, 500), /needs a person/);
   assert.equal(s.f.oneTime.length, 1);
 });
 

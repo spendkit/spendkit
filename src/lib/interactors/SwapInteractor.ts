@@ -2,9 +2,9 @@ import { randomBytes } from "node:crypto";
 import type { SwapRepository } from "../../domain/repositories/SwapRepository.js";
 import type { CheckoutSwap } from "../../domain/types/Entities.js";
 import type { CardTransaction } from "../../domain/interfaces/CardIssuing.js";
-import type { CardVault } from "../../adapters/cardVault/CardVault.js";
-import { ONE_TIME_MIN_CENTS, SWAP_KEY_PREFIX, type AgentPrincipal, type ChargeOutcome, type Charger, type PayRequest, type SpendView } from "./CardholderInteractor.js";
-import { scrub, type CardDetails, type CheckoutFiller, type FillResult } from "../../adapters/checkoutFillers/CheckoutFiller.js";
+import type { CardCharger, ChargeCard, ChargeCardResult, ChargeResult } from "../../domain/interfaces/CardCharger.js";
+import { ONE_TIME_MIN_CENTS, SWAP_KEY_PREFIX, type AgentPrincipal, type ChargeOutcome, type Charger, type OneTimePrep, type PayRequest, type SpendView } from "./CardholderInteractor.js";
+import type { FillResult } from "../../adapters/checkoutFillers/CheckoutFiller.js";
 import type { SwapLiveFeed } from "../services/SwapLiveFeed.js";
 import { isPrivateHost } from "../../adapters/checkoutFillers/formScan.js";
 import { AgentCardsError, badRequestError, conflictError, forbiddenError, notFoundError } from "../../errors.js";
@@ -14,8 +14,9 @@ import { AgentCardsError, badRequestError, conflictError, forbiddenError, notFou
  * owner's real card. The agent sends a URL and the price it agreed to; it never sees the card.
  *
  *   validate (host allowlist, hard cap) -> CardholderInteractor.pay under checkout:swap:<id>  (limits, balance, ledger debit)
- *     -> charge: vault.reveal (audited, purpose checkout:<id>) -> filler checks the page total, types the card, pays
- *     -> details scrubbed in a finally, whatever happened
+ *     -> charge: one-time card policy here, then the CardCharger (the cardholder-data boundary) issues the card,
+ *        opens it (audited, purpose checkout:<id>), the filler checks the page total, types it and pays, and the
+ *        details are scrubbed and discarded in a finally, whatever happened. Only card-free results come back.
  *
  * Charge outcomes: the page confirmed -> approved. Nothing was submitted, or the page showed a decline -> refused
  * (the debit is undone). Submitted with no clear answer (3-D Secure, a bot check after submit, timeout) -> unknown:
@@ -61,12 +62,14 @@ export interface SwapContext {
     pay(p: AgentPrincipal, req: PayRequest, opts: { internal: true; charge: Charger }): Promise<SpendView>;
     resolveSwapSpend(spendId: string, out: { status: "approved"; auth?: string } | { status: "voided"; reason: string }): Promise<boolean>;
     noteSpend(spendId: string, reason: string): Promise<void>;
-    /** The user's own card, or in privacy mode a one-time card made for this payment. */
-    chargeCardFor(p: AgentPrincipal, spendId: string, amountCents: number, opts: { needDetails: boolean; forceOneTime?: boolean }): Promise<string>;
+    /** The one-time card policy for this payment (min, daily cap, KYC), before the charger issues the card. */
+    prepareOneTime(p: AgentPrincipal, spendId: string, amountCents: number): Promise<OneTimePrep>;
+    /** Records what became of that one-time card. */
+    settleOneTime(prep: Extract<OneTimePrep, { kind: "issue" }>, spendId: string, card: ChargeCardResult): Promise<void>;
     privacyMode(userId: string): Promise<boolean>;
   };
-  vault: Pick<CardVault, "reveal" | "has" | "discard">;
-  filler: CheckoutFiller;
+  /** The cardholder-data boundary: issues the one-time card, fills the page, forgets the details. */
+  charger: CardCharger;
   lifecycle: { transactions(cardId: string, type?: string, pageSize?: number): Promise<CardTransaction[]> };
   config: SwapConfig;
   /** Live view for test-card swaps only (see SwapLiveFeed). */
@@ -132,11 +135,6 @@ export function isStripeTestUrl(raw: string): boolean {
   if (u.host === "buy.stripe.com") return segs.length > 0 && segs[0]!.startsWith("test_");
   return false;
 }
-/** Stripe's public test card (docs.stripe.com/testing). Not anyone's card. */
-const stripeTestCard = (): CardDetails => ({
-  pan: "4242424242424242", cvv: "123", expMonth: 12, expYear: new Date().getUTCFullYear() + 3, nameOnCard: "Agent Card Test", billingZip: "94107",
-  billingAddress: { line1: "510 Townsend St", city: "San Francisco", state: "CA", country: "US" },
-});
 /** card_txn_ref for a swap paid with the Stripe test card: there is no card authorization to claim. */
 const TEST_CARD_REF = "stripe-test-card:";
 /** charge_card_id of a swap paid with the Stripe test card, so reconcile never matches it to a real authorization. */
@@ -273,47 +271,60 @@ export class SwapInteractor {
     };
     const charge: Charger = (spendId) => this.serialized(async (): Promise<ChargeOutcome> => {
       await this.d.swaps.markFilling(swapId, spendId);
-      let card: CardDetails | null = null;
-      let chargeCardId = p.cardId;
+      let card: ChargeCard;
+      let prep: OneTimePrep | undefined;
+      let receiptEmail: string;
       try {
+        // Before the one-time policy, so a missing email never leaves a one-time card attempt open.
+        receiptEmail = await this.receiptEmail(p);
         if (testCard) {
-          this.log(`swap ${swapId}: test link or test shop, paying with Stripe's test card (the vault is not opened)`);
           await this.d.swaps.setChargeCard(swapId, TEST_CARD_ID);
-          card = stripeTestCard();
+          card = { kind: "test" };
         } else {
-          // As late as possible: after the debit, right before the page. In privacy mode this is where the one-time
-          // card is made, so a payment that never gets this far never costs a card.
-          // An open (not allowlisted) host always gets a one-time card holding exactly this amount.
-          chargeCardId = await this.d.app.chargeCardFor(p, spendId, amountCents, { needDetails: true, forceOneTime: oneTime });
-          if (chargeCardId !== p.cardId) {
-            await this.d.swaps.setChargeCard(swapId, chargeCardId);
-          }
-          card = await this.d.vault.reveal(chargeCardId, `checkout:${swapId}`);
-          if (!card) {
-            fill = { outcome: "error", submitted: false, detail: "card details not on file" };
-            return { kind: "refused", reason: "this card's details are not on file; nothing was charged" };
-          }
+          // The one-time card policy runs here, in the main app; the card itself is issued by the charger.
+          prep = await this.d.app.prepareOneTime(p, spendId, amountCents);
+          card = prep.kind === "ready" ? { kind: "existing", cardId: prep.cardId } : { kind: "issue", ref: prep.ref, cardholder: prep.cardholder };
         }
-        // The live view is for Stripe's public test card only: with a real card nothing from the page is captured.
-        const live = testCard ? this.d.live : undefined;
-        live?.publish(p.agentId, { type: "start", swapId, merchant: row.merchant, amountCents, url: row.checkoutUrl });
-        const watch = live && {
-          step: (label: string) => live.publish(p.agentId, { type: "step", swapId, label }),
-          frame: (jpeg: string) => live.publish(p.agentId, { type: "frame", swapId, jpeg }),
-        };
-        fill = await this.d.filler.fill({ url: row.checkoutUrl, expectedAmountCents: amountCents, card, email: await this.receiptEmail(p), ...(watch ? { watch } : {}) });
-        live?.publish(p.agentId, { type: "end", swapId, outcome: fill.outcome });
       } catch (e) {
-        // The filler reports its own errors; this is the vault or something unexpected, before any submit.
         fill = { outcome: "error", submitted: false, detail: errText(e).slice(0, 200) };
         // AgentCardsError messages are written for the caller (e.g. why a one-time card could not be made).
         return { kind: "refused", reason: e instanceof AgentCardsError ? e.message : "could not start the checkout; nothing was charged" };
-      } finally {
-        scrub(card);
-        card = null;
-        // A one-time card is single use: once the page has had it, nothing here needs its details again.
-        if (chargeCardId !== p.cardId) await this.d.vault.discard(chargeCardId, `checkout:${swapId}:done`).catch((e) => this.log(`swap ${swapId}: could not discard the one-time card's details: ${errText(e)}`));
       }
+      const issuing = prep?.kind === "issue" ? prep : undefined;
+      let settled = false;
+      // The one-time card exists: record it before the page is touched, so reconcile can find it if we die mid-fill.
+      const cardIssued = async (c: { id: string; last4?: string }) => {
+        if (issuing) {
+          await this.d.app.settleOneTime(issuing, spendId, { state: "issued", id: c.id, ...(c.last4 ? { last4: c.last4 } : {}) });
+          settled = true;
+        }
+        await this.d.swaps.setChargeCard(swapId, c.id);
+      };
+      // The live view is for Stripe's public test card only: with a real card nothing from the page is captured.
+      const live = testCard ? this.d.live : undefined;
+      live?.publish(p.agentId, { type: "start", swapId, merchant: row.merchant, amountCents, url: row.checkoutUrl });
+      const watch = live && {
+        step: (label: string) => live.publish(p.agentId, { type: "step", swapId, label }),
+        frame: (jpeg: string) => live.publish(p.agentId, { type: "frame", swapId, jpeg }),
+      };
+      let result: ChargeResult;
+      try {
+        result = await this.d.charger.charge(
+          { swapId, spendId, checkoutUrl: row.checkoutUrl, expectedAmountCents: amountCents, receiptEmail, card },
+          { cardIssued, ...(watch ? { watch } : {}) },
+        );
+      } catch (e) {
+        // A charger never throws for a page outcome; this is something unexpected. If a card may have been made and
+        // was not recorded, a person decides (it may hold the money); the debit is undone as nothing reached a page.
+        if (issuing && !settled) await this.d.app.settleOneTime(issuing, spendId, { state: "unknown", detail: `charger failed: ${errText(e)}` });
+        fill = { outcome: "error", submitted: false, detail: errText(e).slice(0, 200) };
+        return { kind: "refused", reason: "could not start the checkout; nothing was charged" };
+      }
+      // A card the charger made but did not hand to the page, or whose issue answer was lost.
+      if (issuing && !settled && result.card.state !== "issued" && result.card.state !== "test") await this.d.app.settleOneTime(issuing, spendId, result.card);
+      fill = { outcome: result.fill.outcome, submitted: result.fill.submitted, ...(result.fill.detail !== null ? { detail: result.fill.detail } : {}) };
+      if (result.refusal !== undefined) return { kind: "refused", reason: result.refusal };
+      live?.publish(p.agentId, { type: "end", swapId, outcome: fill.outcome });
       await this.d.swaps.recordFill(swapId, { outcome: fill.outcome, detail: fill.detail ?? null, submitted: fill.submitted });
       this.log(`swap ${swapId}: ${fill.outcome}${fill.submitted ? " (submitted)" : ""}`);
       return outcomeOf(fill);
