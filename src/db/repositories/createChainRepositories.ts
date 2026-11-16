@@ -1,6 +1,6 @@
-import { and, asc, eq, isNotNull, sql } from "drizzle-orm";
+import { and, asc, eq, isNotNull, isNull, sql } from "drizzle-orm";
 import type { CursorStore } from "../../adapters/deposits/BaseUsdcWatcher.js";
-import type { DepositAddressRepository } from "../../domain/repositories/DepositAddressRepository.js";
+import type { DepositAddressRepository, DepositRail } from "../../domain/repositories/DepositAddressRepository.js";
 import type { Database, Executor } from "../client.js";
 import { chainCursor, depositAddress } from "../schema/index.js";
 
@@ -26,26 +26,29 @@ export const createCursorStore = (db: Database, name: string): CursorStore => ({
   },
 });
 
-async function cardFor(q: Executor, chain: string, address: string): Promise<string | undefined> {
+async function cardFor(q: Executor, chain: string, address: string, rail?: DepositRail): Promise<string | undefined> {
   const [row] = await q
     .select({ cardId: depositAddress.cardId })
     .from(depositAddress)
-    .where(and(eq(depositAddress.chain, chain), eq(depositAddress.address, address.toLowerCase())));
+    .where(and(eq(depositAddress.chain, chain), eq(depositAddress.address, address.toLowerCase()), rail ? eq(depositAddress.rail, rail) : undefined));
   return row?.cardId;
 }
 
-async function add(q: Executor, chain: string, address: string, cardId: string): Promise<void> {
+async function add(q: Executor, chain: string, address: string, cardId: string, rail: DepositRail): Promise<void> {
   const a = address.toLowerCase();
   if (!ADDRESS.test(a)) throw new Error("address must be 0x + 40 hex characters");
   if (!cardId.trim()) throw new Error("cardId is required: a deposit address without a card is no use");
-  await q.insert(depositAddress).values({ chain, address: a, cardId }).onConflictDoNothing({ target: [depositAddress.chain, depositAddress.address] });
-  const owner = await cardFor(q, chain, a);
-  if (owner !== cardId) throw new Error(`address ${a} already belongs to card ${owner}`);
+  if (rail !== "hd" && rail !== "circle") throw new Error("rail must be 'hd' or 'circle'");
+  await q.insert(depositAddress).values({ chain, address: a, cardId, rail }).onConflictDoNothing({ target: [depositAddress.chain, depositAddress.address] });
+  const [row] = await q.select({ cardId: depositAddress.cardId, rail: depositAddress.rail }).from(depositAddress)
+    .where(and(eq(depositAddress.chain, chain), eq(depositAddress.address, a)));
+  if (row?.cardId !== cardId) throw new Error(`address ${a} already belongs to card ${row?.cardId}`);
+  if (row.rail !== null && row.rail !== rail) throw new Error(`address ${a} is already on the ${row.rail} rail`);
 }
 
 /** Deposit addresses (table deposit_address) on one chain. One address funds exactly one card. */
 export const createDepositAddressRepository = (db: Database, chain = "base"): DepositAddressRepository => ({
-  add: (address, cardId) => add(db, chain, address, cardId),
+  add: (address, cardId, rail = "hd") => add(db, chain, address, cardId, rail),
 
   async all() {
     return (await db.select({ address: depositAddress.address }).from(depositAddress).where(eq(depositAddress.chain, chain))).map((r) => r.address);
@@ -71,10 +74,29 @@ export const createDepositAddressRepository = (db: Database, chain = "base"): De
     return i;
   },
 
-  async assign(address, cardId, derivationIndex) {
+  onRail(rail) {
+    return {
+      all: async () => (await db.select({ address: depositAddress.address }).from(depositAddress)
+        .where(and(eq(depositAddress.chain, chain), eq(depositAddress.rail, rail)))).map((r) => r.address),
+      cardFor: (address) => cardFor(db, chain, address, rail),
+    };
+  },
+
+  async classifyUnrailed(isHd) {
+    const rows = await db.select({ address: depositAddress.address, derivationIndex: depositAddress.derivationIndex }).from(depositAddress)
+      .where(and(eq(depositAddress.chain, chain), isNull(depositAddress.rail)));
+    for (const r of rows) {
+      const rail: DepositRail = r.derivationIndex === null || isHd(r.address, r.derivationIndex) ? "hd" : "circle";
+      await db.update(depositAddress).set({ rail })
+        .where(and(eq(depositAddress.chain, chain), eq(depositAddress.address, r.address), isNull(depositAddress.rail)));
+    }
+    return rows.length;
+  },
+
+  async assign(address, cardId, derivationIndex, rail = "hd") {
     const a = address.toLowerCase();
     await db.transaction(async (tx) => {
-      await add(tx, chain, a, cardId);
+      await add(tx, chain, a, cardId, rail);
       // As before the refactor: the index is recorded on every chain's row for this address.
       await tx.update(depositAddress).set({ derivationIndex }).where(eq(depositAddress.address, a));
     });

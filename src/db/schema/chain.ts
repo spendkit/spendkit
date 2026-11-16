@@ -2,7 +2,7 @@ import { sql } from "drizzle-orm";
 import { check, index, integer, pgSequence, pgTable, primaryKey, text } from "drizzle-orm/pg-core";
 import { bigintNumber, timestamptz } from "./columns.js";
 
-/** Deposit addresses we issued (migrations 002, 003). Each funds exactly one card. */
+/** Deposit addresses we issued (migrations 002, 003, 013). Each funds exactly one card. */
 export const depositAddress = pgTable(
   "deposit_address",
   {
@@ -13,13 +13,17 @@ export const depositAddress = pgTable(
     createdAt: timestamptz("created_at").notNull().defaultNow(),
     /** HD derivation index, so the key can be re-derived from the mnemonic. */
     derivationIndex: integer("derivation_index").unique("deposit_address_derivation_index_key"),
+    /** 'hd' (chain watcher) or 'circle' (Circle webhook). NULL only on rows from before migration 013, until bootstrap classifies them. */
+    rail: text("rail").$type<"hd" | "circle">(),
   },
   (t) => [
     primaryKey({ name: "deposit_address_pkey", columns: [t.chain, t.address] }),
     index("deposit_address_card").on(t.cardId),
+    index("deposit_address_chain_rail").on(t.chain, t.rail),
     check("deposit_address_chain_check", sql`${t.chain} <> ''`),
     check("deposit_address_address_check", sql`${t.address} ~ '^0x[0-9a-f]{40}$'`),
     check("deposit_address_card_id_check", sql`${t.cardId} <> ''`),
+    check("deposit_address_rail_check", sql`${t.rail} IN ('hd', 'circle')`),
   ],
 );
 

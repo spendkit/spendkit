@@ -1,4 +1,4 @@
-import type { Ledger } from "../../lib/services/Ledger.js";
+import { accounts, depositKey, type Ledger } from "../../lib/services/Ledger.js";
 import { baseUnitsToCents } from "../../lib/utils/units.js";
 import { CIRCLE_CHAINS, CIRCLE_USDC, CircleError, usdcToBaseUnits, verifyCircleSignature, type CircleClient, type CircleTx } from "../../lib/clients/circle/CircleClient.js";
 
@@ -12,9 +12,12 @@ export type CircleOutcome =
   | { status: "ignored"; reason: string };
 
 export interface CircleDepositsDeps {
-  circle: Pick<CircleClient, "notificationKey" | "transaction" | "token"> & Partial<Pick<CircleClient, "recentInbound">>;
+  circle: Pick<CircleClient, "notificationKey" | "transaction" | "token" | "ownsWallet"> & Partial<Pick<CircleClient, "recentInbound">>;
   ledger: Ledger;
+  /** Our Circle deposit wallets only (deposit_address rail 'circle'), never the HD addresses the chain watcher credits. */
   addresses: { cardFor(address: string): Promise<string | undefined> };
+  /** Any address of ours (deposit addresses on every rail, the payout account). A transfer from one is internal, not a deposit. */
+  isOwnAddress?: (address: string) => Promise<boolean>;
   /** Called for every credit that was new (not a redelivery). */
   onCredited?: (r: Extract<CircleOutcome, { status: "credited" }>) => void;
   onDust?: (d: { txHash: string; dustBase: bigint }) => void;
@@ -87,14 +90,19 @@ export class CircleDeposits {
     if (tx.state !== "COMPLETE") return { status: "ignored", reason: `state ${String(tx.state)}` };
     const chain = tx.blockchain ? CIRCLE_CHAINS[tx.blockchain] : undefined;
     if (!chain) return { status: "ignored", reason: `unsupported blockchain ${String(tx.blockchain)}` };
-    // Cheapest checks first: most listed transfers are not to our addresses, and each token lookup is an API call.
+    // Cheapest checks first: most listed transfers are not to our addresses, and each Circle lookup is an API call.
     const cardId = tx.destinationAddress ? await this.d.addresses.cardFor(tx.destinationAddress) : undefined;
     if (!cardId) return { status: "ignored", reason: "not one of our deposit addresses" };
+    // Money moving between our own addresses (a sweep, a payout account top-up) is not a customer deposit.
+    if (tx.sourceAddress && (await this.d.isOwnAddress?.(tx.sourceAddress.toLowerCase()))) return { status: "ignored", reason: "from one of our own addresses" };
+    // The receiving wallet must be one of ours, at that address: the entity may hold other wallet sets.
+    if (!tx.walletId) return { status: "ignored", reason: "no walletId" };
+    if (!(await this.d.circle.ownsWallet(tx.walletId, tx.destinationAddress!))) return { status: "ignored", reason: "not one of our Circle wallets" };
     const token = tx.tokenId ? await this.d.circle.token(tx.tokenId) : undefined;
     if (!token || token.symbol !== "USDC" || token.blockchain !== tx.blockchain || token.decimals !== 6 || token.tokenAddress?.toLowerCase() !== CIRCLE_USDC[tx.blockchain!]) {
       return { status: "ignored", reason: "not the pinned USDC contract" };
     }
-    if (!tx.txHash || tx.amounts?.length !== 1) return { status: "ignored", reason: "unexpected transaction shape" };
+    if (!tx.txHash || !/^[A-Za-z0-9-]{1,64}$/.test(tx.id) || tx.amounts?.length !== 1) return { status: "ignored", reason: "unexpected transaction shape" };
     const base = usdcToBaseUnits(tx.amounts[0]!);
     if (!base || base === 0n) return { status: "ignored", reason: "bad amount" };
     const { cents, dustBase } = baseUnitsToCents(base, 6);
@@ -104,14 +112,23 @@ export class CircleDeposits {
     }
 
     const label = `circle-${chain}`;
+    // Keyed on Circle's transaction id: one on-chain tx can pay two of our wallets (a batched transfer), and Circle does
+    // not give the log index, so the tx hash alone is not one transfer. Credits made before this key existed used
+    // `<txHash>:0`; one there for the same card and amount is this transfer, already credited.
+    if (await this.creditedUnderLegacyKey(label, tx.txHash, cardId, cents)) return { status: "credited", cardId, amountCents: cents, chain, isNew: false };
     // Only for the log line: whether this call is the one that credits. The ledger key is what prevents a double credit.
-    const isNew = !(await this.d.ledger.findByKey(`deposit:${label}:${tx.txHash.toLowerCase()}:0`));
-    await this.d.ledger.confirmDeposit({ chain: label, asset: "USDC", cardId, amountCents: cents, txHash: tx.txHash, logIndex: 0 });
+    const isNew = !(await this.d.ledger.findByKey(depositKey({ chain: label, transferId: tx.id })));
+    await this.d.ledger.confirmDeposit({ chain: label, asset: "USDC", cardId, amountCents: cents, txHash: tx.txHash, transferId: tx.id });
     const out = { status: "credited", cardId, amountCents: cents, chain, isNew } as const;
     if (isNew) {
       if (dustBase > 0n) this.reportDust(tx.txHash, dustBase);
       this.d.onCredited?.(out);
     }
     return out;
+  }
+
+  private async creditedUnderLegacyKey(label: string, txHash: string, cardId: string, cents: number): Promise<boolean> {
+    const old = await this.d.ledger.findByKey(depositKey({ chain: label, txHash, logIndex: 0 }));
+    return !!old?.postings.some((p) => p.account === accounts.holding(cardId) && p.amountCents === cents);
   }
 }

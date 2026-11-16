@@ -69,7 +69,7 @@ Agents paying hosted Stripe checkouts with the vaulted card. Off unless `SWAP_EN
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `APP_ENV` | unset (sandbox) | `production` is the only way to use a non-sandbox Miden host. It requires `CARD_PROVIDER=miden` and https Miden URLs, and refuses to start with `ALLOW_SIMULATED_DEPOSITS=1` or `SWAP_STRIPE_TEST_CARD=1` |
-| `MIDEN_WALLET_MIN_USD` | `100` in production, off in sandbox | Low-balance alert level, in dollars |
+| `MIDEN_WALLET_MIN_USD` | `100` in production, off in sandbox | Low-balance alert level, in dollars. Checked every minute; alerts (log and `ALERT_WEBHOOK_URL`) when the Miden USD wallet's available balance is below it, again hourly while it stays low, and once on recovery. Set it above a day's expected top-ups, so there is time to fund the wallet by hand before top-ups fail |
 | `ALERT_WEBHOOK_URL` | none | Slack-compatible webhook that gets `{ text }` for low balance, Circle webhook 5xx, reconcile errors and stuck top-ups |
 | `STUCK_FUNDING_MINUTES` | `15` | Minutes a top-up may sit in `reserved` before it alerts |
 

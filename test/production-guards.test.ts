@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { bootstrapApplication } from "../src/bootstrap.js";
 import { MidenClient } from "../src/lib/clients/cardIssuing/miden/MidenClient.js";
 import { WalletBalanceMonitor } from "../src/adapters/funding/WalletBalanceMonitor.js";
+import { Alerter } from "../src/lib/services/Alerter.js";
 
 // Every guard case below must throw before bootstrap opens a database connection.
 const prod = {
@@ -31,21 +32,49 @@ function monitor(balances: () => Response, minUsd = 100) {
   }) as typeof fetch;
   const miden = new MidenClient({ baseUrl: "https://api.test/miden", tokenUrl: "https://id.test/connect/token", clientId: "i", clientSecret: "s", uniqueKey: "u", fetch: f });
   const hookFetch = (async (_u: string, init: RequestInit) => { hooks.push(JSON.parse(init.body as string).text); return new Response("ok"); }) as unknown as typeof fetch;
-  const m = new WalletBalanceMonitor({ miden, minUsd, log: (s) => logs.push(s), alertWebhookUrl: "https://hook.test/x", fetch: hookFetch, now: () => (t += 61_000) });
-  return { m, logs, hooks };
+  const clock = { advance: (ms: number) => { t += ms; } };
+  const now = () => (t += 61_000); // every check is past the 60 s read throttle
+  const alerts = new Alerter({ log: (s) => logs.push(s), webhookUrl: "https://hook.test/x", fetch: hookFetch, now: () => t });
+  const m = new WalletBalanceMonitor({ miden, minUsd, alerts, now });
+  return { m, logs, hooks, clock };
 }
 const bal = (usd: number) => () => Response.json({ isSuccessful: true, responseCode: "000", data: [{ walletCurrency: "USD", walletAvailableBalance: usd }] });
 
-test("monitor alerts once on low, stays quiet while low, and says when recovered", async () => {
+test("monitor alerts on low, stays quiet within the hour, says when recovered", async () => {
   let cur = bal(50);
   const { m, logs, hooks } = monitor(() => cur());
   await m.check(); await m.check();
   assert.equal(logs.length, 1);
-  assert.match(logs[0]!, /LOW BALANCE.*\$50\.00.*\$100\.00/);
+  assert.match(logs[0]!, /^ALERT LOW BALANCE.*\$50\.00.*\$100\.00/);
   assert.equal(hooks.length, 1);
   cur = bal(500);
   await m.check();
-  assert.match(logs[1]!, /ok again.*\$500\.00/);
+  assert.match(logs[1]!, /^RECOVERED .*ok again.*\$500\.00/);
+  assert.equal(hooks.length, 2);
+});
+
+test("monitor keeps reminding, at most hourly, while the wallet stays low", async () => {
+  const { m, logs, clock } = monitor(bal(20));
+  await m.check();
+  for (let i = 0; i < 5; i++) await m.check(); // about 5 minutes later: still one alert
+  assert.equal(logs.filter((l) => /LOW BALANCE/.test(l)).length, 1);
+  clock.advance(3_600_000);
+  await m.check();
+  assert.equal(logs.filter((l) => /LOW BALANCE/.test(l)).length, 2);
+  assert.match(logs.at(-1)!, /\$20\.00/);
+});
+
+test("an unreadable balance does not count as recovered", async () => {
+  let cur = bal(20);
+  const { m, logs } = monitor(() => cur());
+  await m.check();
+  cur = () => new Response("nope", { status: 500 });
+  await m.check();
+  assert.ok(!logs.some((l) => /^RECOVERED .*ok again/.test(l)));
+  assert.match(logs.at(-1)!, /could not be read/);
+  cur = bal(20);
+  await m.check();
+  assert.match(logs.at(-1)!, /^RECOVERED .*can be read again/);
 });
 
 test("monitor is silent when healthy at boot", async () => {

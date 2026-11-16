@@ -3,9 +3,23 @@
 // hosted-checkout swaps and missed Circle deposits, syncs checkouts and sends payouts.
 import { BaseUsdcWatcher } from "./adapters/deposits/BaseUsdcWatcher.js";
 import type { AgentCardsApp } from "./createApp.js";
-import type { AppParams } from "./domain/types/ContextTypes.js";
+import type { AppParams, WatchedNetwork } from "./domain/types/ContextTypes.js";
 
 const errText = (e: unknown) => (e as Error).message;
+
+/** The chain watcher for one network, as the workers run it. */
+export function createChainWatcher(n: WatchedNetwork, params: Pick<AppParams, "ledger" | "addresses" | "log">): BaseUsdcWatcher {
+  return new BaseUsdcWatcher({
+    // HD addresses only. Circle wallets are credited by the Circle rail under its own ledger key; scanning them here
+    // too (CHAIN_WATCHER=1 with Circle on) would credit one transfer twice.
+    addresses: params.addresses.onRail("hd"),
+    rpc: n.rpc, ledger: params.ledger, cursor: n.cursor, chain: n.label, token: n.token, maxRange: 500,
+    // Testnet: 5 blocks so a sandbox deposit shows quickly. On Base mainnet use finality: "finalized":
+    // a card top-up cannot be undone, so a reorged deposit would be a loss.
+    confirmations: n.confirmations, finality: n.label === "base" ? "finalized" : "confirmations",
+    onDust: (d) => params.log(`dust ${d.dustBase} base units on ${d.txHash}:${d.logIndex} (not credited)`),
+  });
+}
 
 export async function startBackgroundWorkers(
   params: Pick<AppParams, "ledger" | "addresses" | "watchedNetworks" | "log" | "walletMonitor" | "alerts">,
@@ -19,13 +33,7 @@ export async function startBackgroundWorkers(
       const head = Number.parseInt((await n.rpc("eth_blockNumber", [])) as string, 16);
       await n.cursor.set(head - 20);
     }
-    const watcher = new BaseUsdcWatcher({
-      rpc: n.rpc, ledger: params.ledger, addresses: params.addresses, cursor: n.cursor, chain: n.label, token: n.token, maxRange: 500,
-      // Testnet: 5 blocks so a sandbox deposit shows quickly. On Base mainnet use finality: "finalized":
-      // a card top-up cannot be undone, so a reorged deposit would be a loss.
-      confirmations: n.confirmations, finality: n.label === "base" ? "finalized" : "confirmations",
-      onDust: (d) => log(`dust ${d.dustBase} base units on ${d.txHash}:${d.logIndex} (not credited)`),
-    });
+    const watcher = createChainWatcher(n, params);
     let lastChainError = "";
     void watcher.run(stop.signal, {
       intervalMs: 4_000,

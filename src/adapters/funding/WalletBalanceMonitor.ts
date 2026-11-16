@@ -1,3 +1,4 @@
+import type { Alerter } from "../../lib/services/Alerter.js";
 import type { MidenClient } from "../../lib/clients/cardIssuing/miden/MidenClient.js";
 
 interface BalancesResponse {
@@ -9,25 +10,25 @@ interface BalancesResponse {
 
 export interface WalletBalanceMonitorOptions {
   miden: MidenClient;
-  /** Alert when the USD wallet's spendable balance (dollars) is below this. */
+  /** Alert when the USD wallet's spendable balance (dollars) is below this (MIDEN_WALLET_MIN_USD). */
   minUsd: number;
-  log: (msg: string) => void;
-  /** Optional: POSTed `{ text }` (Slack-compatible) when the state changes to low or back to ok. */
-  alertWebhookUrl?: string;
-  fetch?: typeof fetch;
+  /** The shared alerter: logs, POSTs to ALERT_WEBHOOK_URL, repeats hourly while still low, says RECOVERED once. */
+  alerts: Pick<Alerter, "raise" | "clear">;
   /** Minimum gap between Miden reads, ms. */
   intervalMs?: number;
   now?: () => number;
 }
 
+const LOW = "miden-wallet-low";
+const UNREADABLE = "miden-wallet-unreadable";
+
 /**
  * Top-ups are paid from the Miden USD wallet, not from received USDC, so an empty wallet means funded cards
- * cannot be topped up. Reads GET api/v1/wallet/balances (walletAvailableBalance, USD) and alerts on the
- * transition to low and on recovery, not on every poll. A failed read is logged (and alerted, once): not knowing
- * the balance is itself something to know.
+ * cannot be topped up. Reads GET api/v1/wallet/balances (walletAvailableBalance, USD) and raises an alert while it
+ * is below the floor (first time, then at most hourly until it is funded, then one RECOVERED line). A failed read is
+ * its own alert: not knowing the balance is itself something to know.
  */
 export class WalletBalanceMonitor {
-  private state: "ok" | "low" | "unknown" | undefined;
   private last = 0;
   constructor(private readonly o: WalletBalanceMonitorOptions) {}
 
@@ -46,28 +47,16 @@ export class WalletBalanceMonitor {
       if (wallets.length === 0) throw new Error("no USD wallet in the response");
       usd = wallets.reduce((s, w) => s + (Number(w.walletAvailableBalance) || 0), 0);
     } catch (e) {
-      await this.transition("unknown", `Miden USD wallet balance could not be read: ${(e as Error).message}`);
+      // The low alert (if raised) stays raised: an unreadable balance is not a recovered one.
+      await this.o.alerts.raise(UNREADABLE, `Miden USD wallet balance could not be read: ${(e as Error).message}`);
       return;
     }
+    await this.o.alerts.clear(UNREADABLE, "Miden USD wallet balance can be read again.");
     this.lastBalanceUsd = usd;
-    if (usd < this.o.minUsd) await this.transition("low", `LOW BALANCE: Miden USD wallet has $${usd.toFixed(2)} available, below the $${this.o.minUsd.toFixed(2)} floor. Card top-ups will fail until it is funded.`);
-    else await this.transition("ok", `Miden USD wallet balance ok again: $${usd.toFixed(2)} available.`);
-  }
-
-  private async transition(next: "ok" | "low" | "unknown", msg: string): Promise<void> {
-    if (this.state === next) return;
-    const first = this.state === undefined;
-    this.state = next;
-    if (next === "ok" && first) return; // healthy at boot: nothing to say
-    this.o.log(`ALERT ${msg}`);
-    if (!this.o.alertWebhookUrl) return;
-    try {
-      await (this.o.fetch ?? fetch)(this.o.alertWebhookUrl, {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: msg }),
-        signal: AbortSignal.timeout(10_000),
-      });
-    } catch (e) {
-      this.o.log(`ALERT webhook failed: ${(e as Error).message}`);
+    if (usd < this.o.minUsd) {
+      await this.o.alerts.raise(LOW, `LOW BALANCE: Miden USD wallet has $${usd.toFixed(2)} available, below the $${this.o.minUsd.toFixed(2)} floor (MIDEN_WALLET_MIN_USD). Card top-ups will fail once it runs out: fund it now.`);
+    } else {
+      await this.o.alerts.clear(LOW, `Miden USD wallet balance ok again: $${usd.toFixed(2)} available.`);
     }
   }
 }
