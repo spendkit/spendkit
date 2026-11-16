@@ -44,7 +44,7 @@ export interface AppParams {
   cards: CardIssuerPort;
   funding: FundingSource;
   tiers: Record<Tier, TierLimits>;
-  /** Card details vault; without it cards issue but hosted checkouts cannot be paid. */
+  /** Card details vault, for one-time cards only; without it hosted checkouts cannot be paid. */
   vault?: CardVault;
 
   // ----- agents -----
@@ -76,6 +76,8 @@ export interface AppParams {
   /** Sandbox: agents pay through the provider's simulated authorization. */
   sandbox: boolean;
   simulatedDeposits: boolean;
+  /** OWNER_TOKEN_IDLE_DAYS in ms: an owner token unused this long stops working. 0: never. */
+  ownerTokenIdleMs?: number;
   /** Miden USD wallet low-balance alert, checked from the background tick. */
   walletMonitor?: { check(): Promise<void> };
   /** Keyed, de-duplicated alerts (webhook failures, reconcile errors, stuck top-ups). */

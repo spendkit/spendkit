@@ -1,4 +1,4 @@
-import { eq, sql } from "drizzle-orm";
+import { and, eq, ne, sql } from "drizzle-orm";
 import type { CardVaultRepository } from "../../domain/repositories/CardVaultRepository.js";
 import type { Database } from "../client.js";
 import { cardVault, cardVaultAudit } from "../schema/index.js";
@@ -37,5 +37,23 @@ export const createCardVaultRepository = (db: Database): CardVaultRepository => 
 
   async audit(cardId, action, purpose) {
     await db.insert(cardVaultAudit).values({ cardId, action, purpose });
+  },
+
+  async idsNotUnderKey(keyId) {
+    const rows = await db.select({ cardId: cardVault.cardId }).from(cardVault).where(ne(cardVault.keyId, keyId));
+    return rows.map((r) => r.cardId);
+  },
+
+  async rekey(cardId, fromKeyId, box) {
+    return db.transaction(async (tx) => {
+      const updated = await tx
+        .update(cardVault)
+        .set({ keyId: box.keyId, iv: box.iv, ciphertext: box.ciphertext, tag: box.tag, updatedAt: sql`now()` })
+        .where(and(eq(cardVault.cardId, cardId), eq(cardVault.keyId, fromKeyId)))
+        .returning({ cardId: cardVault.cardId });
+      if (!updated.length) return false;
+      await tx.insert(cardVaultAudit).values({ cardId, action: "rekey", purpose: `rekey:${fromKeyId}->${box.keyId}` });
+      return true;
+    });
   },
 });

@@ -6,7 +6,7 @@ export interface SealedBox {
   tag: Buffer;
 }
 
-export type VaultAuditAction = "put" | "overwrite" | "reveal" | "reveal_miss" | "discard";
+export type VaultAuditAction = "put" | "overwrite" | "reveal" | "reveal_miss" | "discard" | "rekey";
 
 /** Storage for the card vault (tables card_vault, card_vault_audit). Every write that matters is audited. */
 export interface CardVaultRepository {
@@ -17,4 +17,11 @@ export interface CardVaultRepository {
   /** Deletes a card's sealed details. True if there were any. */
   remove(cardId: string): Promise<boolean>;
   audit(cardId: string, action: VaultAuditAction, purpose: string): Promise<void>;
+  /** Card ids whose details are sealed under any key other than `keyId` (for re-keying after a rotation). */
+  idsNotUnderKey(keyId: string): Promise<string[]>;
+  /**
+   * Replaces a card's sealed box only if it is still sealed under `fromKeyId`, and writes its rekey audit row,
+   * atomically. False if the row is gone or was already re-sealed.
+   */
+  rekey(cardId: string, fromKeyId: string, box: SealedBox): Promise<boolean>;
 }

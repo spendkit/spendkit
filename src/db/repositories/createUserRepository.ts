@@ -1,4 +1,4 @@
-import { and, eq, gt, isNotNull, isNull, lt, ne } from "drizzle-orm";
+import { and, eq, gt, gte, isNotNull, isNull, lt, ne } from "drizzle-orm";
 import type { UserRepository } from "../../domain/repositories/UserRepository.js";
 import { isUniqueViolation, type Database } from "../client.js";
 import { appCard, appDeveloper, appSession, appUser } from "../schema/index.js";
@@ -26,9 +26,14 @@ export const createUserRepository = (db: Database): UserRepository => ({
     return row;
   },
 
-  async findIdByTokenHash(tokenHash) {
-    const [row] = await db.select({ id: appUser.id }).from(appUser).where(eq(appUser.tokenHash, tokenHash));
+  async findIdByTokenHash(tokenHash, usedSince) {
+    const match = usedSince ? and(eq(appUser.tokenHash, tokenHash), gte(appUser.tokenUsedAt, usedSince)) : eq(appUser.tokenHash, tokenHash);
+    const [row] = await db.select({ id: appUser.id }).from(appUser).where(match);
     return row?.id;
+  },
+
+  async touchToken(userId, at, ifBefore) {
+    await db.update(appUser).set({ tokenUsedAt: at }).where(and(eq(appUser.id, userId), lt(appUser.tokenUsedAt, ifBefore)));
   },
 
   async findIdByExternalId(developerId, externalId) {
@@ -44,8 +49,8 @@ export const createUserRepository = (db: Database): UserRepository => ({
     return row?.privacyMode === true;
   },
 
-  async setTokenHash(userId, tokenHash) {
-    await db.update(appUser).set({ tokenHash }).where(eq(appUser.id, userId));
+  async setTokenHash(userId, tokenHash, at = new Date()) {
+    await db.update(appUser).set({ tokenHash, tokenUsedAt: at }).where(eq(appUser.id, userId));
   },
 
   async setKycSubmission(userId, reference, status) {

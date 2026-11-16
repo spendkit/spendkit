@@ -5,7 +5,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { request } from "node:http";
 import type { AddressInfo } from "node:net";
-import { createAppServer } from "../src/createHttpServer.js";
+import { createAppServer, type ServerOptions } from "../src/createHttpServer.js";
 import type { AgentCardsApp } from "../src/createApp.js";
 import { conflictError } from "../src/errors.js";
 
@@ -25,7 +25,7 @@ function stub(calls: Call[], area: string, overrides: Record<string, (...a: unkn
   });
 }
 
-async function serve(app: AgentCardsApp, extra: { webhookOnlyHosts?: string[] } = {}) {
+async function serve(app: AgentCardsApp, extra: Partial<Omit<ServerOptions, "allowedHosts">> = {}) {
   const probe = createAppServer(app, { allowedHosts: [] });
   await new Promise<void>((r) => probe.listen(0, "127.0.0.1", r));
   const port = (probe.address() as AddressInfo).port;
@@ -286,5 +286,36 @@ test("Circle webhook: raw body reaches the adapter; a bad signature is 401", asy
     assert.deepEqual(bad.json, { error: "invalid signature" });
   } finally {
     s.close();
+  }
+});
+
+test("rate limits: repeated failed sign-ins get 429 before any token is checked; signups are capped per address", async () => {
+  const calls: Call[] = [];
+  const s = await serve(fullApp(calls), { authFailureLimit: 3, signupLimit: 2 });
+  try {
+    for (let i = 0; i < 3; i++) assert.equal((await s.call("GET", "/api/me", { token: "uk_bad" })).status, 401);
+    // Over the limit: refused outright, even with a good token, and the token is not looked up.
+    const before = calls.length;
+    assert.equal((await s.call("GET", "/api/me", { token: "uk_bad" })).status, 401);
+    const blocked = await s.call("GET", "/api/me", { token: "uk_good" });
+    assert.equal(blocked.status, 429);
+    assert.match(blocked.json.error, /too many failed sign-ins/);
+    assert.equal(calls.slice(before).filter((c) => c[0] === "cardholders.userByToken").length, 1, "only the 4th attempt reached a lookup");
+    // Signed webhooks and the health check are never held up by it.
+    assert.notEqual((await s.call("GET", "/healthz")).status, 429);
+    // A blocked address cannot sign up either.
+    assert.equal((await s.call("POST", "/merchant/v1/signup", { body: { name: "x" } })).status, 429);
+  } finally {
+    s.close();
+  }
+  const t = await serve(fullApp(calls), { signupLimit: 2 });
+  try {
+    assert.equal((await t.call("POST", "/merchant/v1/signup", { body: { name: "a" } })).status, 201);
+    assert.equal((await t.call("POST", "/merchant/v1/signup", { body: { name: "b" } })).status, 201);
+    assert.equal((await t.call("POST", "/merchant/v1/signup", { body: { name: "c" } })).status, 429);
+    // Each kind has its own budget.
+    assert.equal((await t.call("POST", "/developer/v1/signup", { body: { name: "d" } })).status, 201);
+  } finally {
+    t.close();
   }
 });

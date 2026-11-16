@@ -49,6 +49,8 @@ export interface CardholderContext {
   sandbox: boolean;
   /** Sandbox only, and only when explicitly switched on (ALLOW_SIMULATED_DEPOSITS=1): fake deposits. */
   simulatedDeposits?: boolean;
+  /** An owner token unused for this long stops working (OWNER_TOKEN_IDLE_DAYS). Unset or 0: never expires. */
+  ownerTokenIdleMs?: number;
   now?: () => Date;
   log?: (msg: string) => void;
   /** Told about things a developer may want a webhook for (kyc.updated, card.issued, funding.completed, spend.settled). Never throws into the money path. */
@@ -82,7 +84,9 @@ export interface SpendView {
 
 /** Miden's minimum useful top-up for us; smaller holding balances wait for more deposits. */
 const MIN_FUNDING_CENTS = 100;
-const ONE_TIME_MIN_CENTS = 100;
+export const ONE_TIME_MIN_CENTS = 100;
+/** How stale an owner token's last-used time may get before a use rewrites it. */
+const TOKEN_TOUCH_EVERY_MS = 60 * 60 * 1000;
 const ONE_TIME_MAX_PER_DAY = 50;
 /** A payment still unanswered this long after it started is checked against the card's transactions. */
 const RECONCILE_AFTER_MS = 60_000;
@@ -253,12 +257,22 @@ export class CardholderInteractor {
   /** Replaces the user's token; the old one stops working at once. */
   async rotateToken(userId: string): Promise<{ token: string }> {
     const token = newToken("uk");
-    await this.d.users.setTokenHash(userId, hashToken(token));
+    await this.d.users.setTokenHash(userId, hashToken(token), this.now());
     return { token };
   }
 
+  /**
+   * The owner a token belongs to. With ownerTokenIdleMs, a token left unused that long is refused (a stolen or
+   * forgotten token does not work forever); each use pushes the expiry back. The use time is written at most once
+   * an hour, so ordinary requests do not write to the database.
+   */
   async userByToken(token: string): Promise<string | undefined> {
-    return this.d.users.findIdByTokenHash(hashToken(token));
+    const idle = this.d.ownerTokenIdleMs ?? 0;
+    if (idle <= 0) return this.d.users.findIdByTokenHash(hashToken(token));
+    const now = this.now();
+    const id = await this.d.users.findIdByTokenHash(hashToken(token), new Date(now.getTime() - idle));
+    if (id) await this.d.users.touchToken(id, now, new Date(now.getTime() - TOKEN_TOUCH_EVERY_MS));
+    return id;
   }
 
   /** Sends the user's identity straight to Miden. Nothing but the reference and status is kept. */

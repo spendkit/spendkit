@@ -3,7 +3,7 @@ import type { SwapRepository } from "../../domain/repositories/SwapRepository.js
 import type { CheckoutSwap } from "../../domain/types/Entities.js";
 import type { CardTransaction } from "../../domain/interfaces/CardIssuing.js";
 import type { CardVault } from "../../adapters/cardVault/CardVault.js";
-import { SWAP_KEY_PREFIX, type AgentPrincipal, type ChargeOutcome, type Charger, type PayRequest, type SpendView } from "./CardholderInteractor.js";
+import { ONE_TIME_MIN_CENTS, SWAP_KEY_PREFIX, type AgentPrincipal, type ChargeOutcome, type Charger, type PayRequest, type SpendView } from "./CardholderInteractor.js";
 import { scrub, type CardDetails, type CheckoutFiller, type FillResult } from "../../adapters/checkoutFillers/CheckoutFiller.js";
 import type { SwapLiveFeed } from "../services/SwapLiveFeed.js";
 import { isPrivateHost } from "../../adapters/checkoutFillers/formScan.js";
@@ -38,7 +38,7 @@ export interface SwapConfig {
   fallbackEmail?: string;
   /**
    * Sandbox only (SWAP_STRIPE_TEST_CARD=1): a Stripe TEST-mode link (cs_test_..., buy.stripe.com/test_...) is paid with
-   * Stripe's public 4242 test card instead of the vaulted card, which a test page would refuse. The vault is not
+   * Stripe's public 4242 test card instead of a one-time card, which a test page would refuse. The vault is not
    * opened, and there is no card authorization to match afterwards. Live links are never affected.
    */
   stripeTestCard?: boolean;
@@ -48,9 +48,9 @@ export interface SwapConfig {
    */
   testHosts?: string[];
   /**
-   * SWAP_OPEN_HOSTS=1: a public https checkout on a host that is not in allowedHosts may be paid too, but only ever with a
-   * one-time card holding exactly the agreed amount (made for the payment, whether or not the owner is in privacy
-   * mode). Hosts naming this machine or a private network are always refused.
+   * SWAP_OPEN_HOSTS=1: a public https checkout on a host that is not in allowedHosts may be paid too. Like every real
+   * checkout it is paid with a one-time card holding exactly the agreed amount. Hosts naming this machine or a private
+   * network are always refused.
    */
   openHosts?: boolean;
 }
@@ -177,11 +177,11 @@ export class SwapInteractor {
 
   async pay(p: AgentPrincipal, req: SwapRequest): Promise<SwapView> {
     const r = this.validate(req);
-    // Fail cleanly, before anything is reserved, when there is no card to swap in. A test link in test-card mode needs
-    // none, and an open host gets a one-time card of its own.
-    const { testCard, oneTime } = this.cardFor(r.url.href);
-    if (!testCard && !oneTime && !(await this.d.vault.has(p.cardId))) {
-      throw conflictError("this card's details are not on file, so it cannot pay hosted checkouts; the owner needs to have them captured again");
+    // Every real checkout gets its own one-time card, so nothing needs to be on file beforehand.
+    // Checked here, before anything is reserved: Miden's smallest one-time card is $1.00.
+    const { testCard } = this.cardFor(r.url.href);
+    if (!testCard && r.amountCents < ONE_TIME_MIN_CENTS) {
+      throw badRequestError(`hosted checkout payments must be at least ${usd(ONE_TIME_MIN_CENTS)} (each is paid with its own one-time card)`);
     }
     await this.insertOrBusy(p, r);
     const row = (await this.d.swaps.findByKey(p.cardId, p.agentId, r.idempotencyKey))!;
@@ -244,8 +244,8 @@ export class SwapInteractor {
 
   /**
    * Which card a checkout URL is paid with: Stripe's test card (a Stripe test link, or a test shop, in test-card mode),
-   * a one-time card (a host that is not on the allowlist: SWAP_OPEN_HOSTS), or else the vaulted card (or, in privacy
-   * mode, a one-time card anyway).
+   * or else a one-time card holding exactly the agreed amount. The user's reusable card is never typed into a page,
+   * so its number and CVV are never captured or stored (PCI DSS 3.3.1: no security code kept after authorization).
    */
   private cardFor(raw: string): { testCard: boolean; oneTime: boolean } {
     const c = this.d.config;
@@ -257,8 +257,7 @@ export class SwapInteractor {
     }
     const host = url.host.toLowerCase();
     const testCard = Boolean(c.stripeTestCard) && (isStripeTestUrl(raw) || (c.testHosts ?? []).includes(host));
-    const vetted = (url.protocol === "https:" && c.allowedHosts.includes(host)) || (url.protocol === "http:" && (c.insecureHosts ?? []).includes(host));
-    return { testCard, oneTime: !testCard && !vetted };
+    return { testCard, oneTime: !testCard };
   }
 
   private async drive(p: AgentPrincipal, row: CheckoutSwap): Promise<SwapView> {

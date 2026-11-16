@@ -427,3 +427,23 @@ test("sim_ chain deposit credits the caller's own deposit address once; another 
   await assert.rejects(s.app.simulateChainDeposit(s.userId, "garbage"), /id must look like/);
   await assert.rejects(s.make({ simulatedDeposits: false }).simulateChainDeposit(s.userId, id), /switched off/);
 });
+
+test("owner tokens expire after OWNER_TOKEN_IDLE_DAYS without use; each use pushes the expiry back", { skip }, async () => {
+  const s = await setup();
+  const day = 86_400_000;
+  let clock = Date.now();
+  const app = s.make({ ownerTokenIdleMs: 30 * day, now: () => new Date(clock) });
+  assert.equal(await app.userByToken(s.token), s.userId);
+  clock += 29 * day;
+  assert.equal(await app.userByToken(s.token), s.userId, "used within the window: still good, and the clock restarts");
+  clock += 29 * day;
+  assert.equal(await app.userByToken(s.token), s.userId, "58 days since signup, but only 29 idle");
+  clock += 31 * day;
+  assert.equal(await app.userByToken(s.token), undefined, "31 days idle: refused");
+  // With expiry off (0), the same stale token works: the setting really is the switch.
+  assert.equal(await s.make({ ownerTokenIdleMs: 0, now: () => new Date(clock) }).userByToken(s.token), s.userId);
+  // A rotated token starts a fresh window.
+  const { token } = await app.rotateToken(s.userId);
+  assert.equal(await app.userByToken(token), s.userId);
+  assert.equal(await app.userByToken(s.token), undefined);
+});

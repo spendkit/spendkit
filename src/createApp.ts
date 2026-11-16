@@ -37,6 +37,7 @@ export function createApp(p: AppParams): AgentCardsApp & Required<Pick<AgentCard
     ledger: p.ledger, lifecycle: p.lifecycle, cardIssuer: p.cards, funding: p.funding,
     wallets: p.wallets, addresses: p.addresses, deriveAddress: p.deriveAddress, tiers: p.tiers, chain: p.chain,
     sandbox: p.sandbox, simulatedDeposits: p.simulatedDeposits, log: p.log,
+    ...(p.ownerTokenIdleMs ? { ownerTokenIdleMs: p.ownerTokenIdleMs } : {}),
     ...(p.depositNetworks ? { depositNetworks: p.depositNetworks } : {}),
     ...(p.depositRail ? { depositRail: p.depositRail } : {}),
     onEvent: (userId, type, data) => developers?.onEvent(userId, type, data) ?? Promise.resolve(),

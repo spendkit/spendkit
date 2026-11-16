@@ -8,7 +8,7 @@ import { decryptSecureCardDetails, parseExpiry } from "../src/lib/clients/cardIs
 import { createDatabase } from "../src/db/client.js";
 import { migrate } from "../src/db/migrate.js";
 import { createCardVaultRepository } from "../src/db/repositories/createCardVaultRepository.js";
-import { MemoryCardVault, SealedCardVault, vaultKeyFromEnv, type CardDetails } from "../src/adapters/cardVault/CardVault.js";
+import { MemoryCardVault, SealedCardVault, vaultKeyFromEnv, vaultKeyringFromEnv, type CardDetails } from "../src/adapters/cardVault/CardVault.js";
 
 // The sample on docs.miden.co/decrypt-encrypted-card-details-copy.md (public, not a real card).
 const DOC_CLIENT_ID = "GEORGEDAUGHTERS4BF84D67844F4A3E94E884719E6DBDDF";
@@ -93,41 +93,41 @@ const policy = { perTransactionCents: 1000, dailyCents: 1000 };
 const kyc = { customerId: "cust", kycToken: "tok" };
 const funding = { fund: async () => ({ id: "1", status: "confirmed" as const }) };
 
-test("issue captures secureCardDetails into the vault and returns no card data", async () => {
+test("a one-time card's secureCardDetails are captured into the vault and no card data is returned", async () => {
   const uk = "3f2b8c1e-9d4a-4e7b-a1c2-5d6e7f809a1b";
   const secure = midenEncrypt({ CardNumber: "4111111111111111", SecurityCode: "123", Expiration: "0331" }, uk, "key=last");
-  const m = midenFake({ "/api/v2/cards/issue": { isSuccessful: true, responseCode: "000", data: { cardId: "card-1", firstSix: "411111", lastFour: "1111", secureCardDetails: secure } } }, undefined, uk);
+  const m = midenFake({ "/api/v2/cards/issue-lite": { isSuccessful: true, responseCode: "000", data: { cardId: "card-1", firstSix: "411111", lastFour: "1111", secureCardDetails: secure } } }, undefined, uk);
   const vault = new MemoryCardVault();
   const logs: string[] = [];
   const svc = new CardService(m.miden, funding, undefined, { vault, keys: m.keys, log: (s) => logs.push(s) });
-  const card = await svc.issue("a", policy, kyc, "ref");
+  const card = await svc.issueOneTime(kyc, 500, "ref", { capture: true });
   assert.equal(card.detailsCaptured, true);
   assert.ok(!JSON.stringify(card).includes("4111111111111111"));
   assert.deepEqual(await vault.reveal("card-1", "test"), { pan: "4111111111111111", cvv: "123", expMonth: 3, expYear: 2031 });
   assert.ok(logs.every((l) => !l.includes("411111111111") && !l.includes("123,") && !l.includes(secure)));
   // full-PAN (404 here) is only for name/ZIP; the issue-time capture stands without it.
-  assert.deepEqual(m.paths, ["/api/v2/cards/issue", "/api/v1/cards/details/card-1/full-pan"]);
+  assert.deepEqual(m.paths, ["/api/v2/cards/issue-lite", "/api/v1/cards/details/card-1/full-pan"]);
 });
 
-test("issue adds name and billing ZIP from full-PAN when its PAN matches", async () => {
+test("one-time capture adds name and billing ZIP from full-PAN when its PAN matches", async () => {
   const uk = "3f2b8c1e-9d4a-4e7b-a1c2-5d6e7f809a1b";
   const secure = midenEncrypt({ CardNumber: "4111111111111111", SecurityCode: "123", Expiration: "0331" }, uk, "key=last");
   const fullPan = (pan: string) => ({ isSuccessful: true, responseCode: "000", data: { cardNumber: pan, securityCode: "123", expiration: "03/31", firstName: "Ada", lastName: "Obi", billingDetails: { zipCode: "10001" } } });
   const m = midenFake({
-    "/api/v2/cards/issue": { isSuccessful: true, responseCode: "000", data: { cardId: "c5", lastFour: "1111", secureCardDetails: secure } },
+    "/api/v2/cards/issue-lite": { isSuccessful: true, responseCode: "000", data: { cardId: "c5", lastFour: "1111", secureCardDetails: secure } },
     "/api/v1/cards/details/c5/full-pan": fullPan("4111111111111111"),
   }, undefined, uk);
   const vault = new MemoryCardVault();
-  await new CardService(m.miden, funding, undefined, { vault, keys: m.keys }).issue("a", policy, kyc, "ref");
+  await new CardService(m.miden, funding, undefined, { vault, keys: m.keys }).issueOneTime(kyc, 500, "ref", { capture: true });
   assert.deepEqual(await vault.reveal("c5", "t"), { pan: "4111111111111111", cvv: "123", expMonth: 3, expYear: 2031, nameOnCard: "Ada Obi", billingZip: "10001" });
 
   // A full-PAN answer for some other card number never replaces the issue-time capture.
   const m2 = midenFake({
-    "/api/v2/cards/issue": { isSuccessful: true, responseCode: "000", data: { cardId: "c6", lastFour: "1111", secureCardDetails: secure } },
+    "/api/v2/cards/issue-lite": { isSuccessful: true, responseCode: "000", data: { cardId: "c6", lastFour: "1111", secureCardDetails: secure } },
     "/api/v1/cards/details/c6/full-pan": fullPan("4000000000000002"),
   }, undefined, uk);
   const v2 = new MemoryCardVault();
-  await new CardService(m2.miden, funding, undefined, { vault: v2, keys: m2.keys }).issue("a", policy, kyc, "ref");
+  await new CardService(m2.miden, funding, undefined, { vault: v2, keys: m2.keys }).issueOneTime(kyc, 500, "ref", { capture: true });
   assert.deepEqual(await v2.reveal("c6", "t"), { pan: "4111111111111111", cvv: "123", expMonth: 3, expYear: 2031 });
 });
 
@@ -136,11 +136,11 @@ test("full-PAN billingDetails becomes a street billing address only when line1, 
   const secure = midenEncrypt({ CardNumber: "4111111111111111", SecurityCode: "123", Expiration: "0331" }, uk, "key=last");
   const run = async (billingDetails: Record<string, string>) => {
     const m = midenFake({
-      "/api/v2/cards/issue": { isSuccessful: true, responseCode: "000", data: { cardId: "c7", lastFour: "1111", secureCardDetails: secure } },
+      "/api/v2/cards/issue-lite": { isSuccessful: true, responseCode: "000", data: { cardId: "c7", lastFour: "1111", secureCardDetails: secure } },
       "/api/v1/cards/details/c7/full-pan": { isSuccessful: true, responseCode: "000", data: { cardNumber: "4111111111111111", securityCode: "123", expiration: "03/31", firstName: "Ada", lastName: "Obi", billingDetails } },
     }, undefined, uk);
     const vault = new MemoryCardVault();
-    await new CardService(m.miden, funding, undefined, { vault, keys: m.keys }).issue("a", policy, kyc, "ref");
+    await new CardService(m.miden, funding, undefined, { vault, keys: m.keys }).issueOneTime(kyc, 500, "ref", { capture: true });
     return vault.reveal("c7", "t");
   };
   const full = { firstName: "Ada", lastName: "Obi", addressLine1: " 1 Marina Rd ", addressLine2: "", city: "Lagos", state: "Lagos", zipCode: "101241", country: "NG" };
@@ -155,24 +155,24 @@ test("a decrypt that disagrees with the issued lastFour is rejected, then full-P
   const uk = "3f2b8c1e-9d4a-4e7b-a1c2-5d6e7f809a1b";
   const secure = midenEncrypt({ CardNumber: "4111111111111111", SecurityCode: "123", Expiration: "0331" }, uk, "key=last");
   const m = midenFake({
-    "/api/v2/cards/issue": { isSuccessful: true, responseCode: "000", data: { cardId: "card-2", lastFour: "9999", secureCardDetails: secure } },
+    "/api/v2/cards/issue-lite": { isSuccessful: true, responseCode: "000", data: { cardId: "card-2", lastFour: "9999", secureCardDetails: secure } },
     "/api/v1/cards/details/card-2/full-pan": {
       isSuccessful: true, responseCode: "000",
       data: { cardNumber: "4000000000009999", securityCode: "456", expiration: "07/30", firstName: "Ada", lastName: "Obi", billingDetails: { zipCode: "10001" } },
     },
   }, undefined, uk);
   const vault = new MemoryCardVault();
-  const card = await new CardService(m.miden, funding, undefined, { vault, keys: m.keys }).issue("a", policy, kyc, "ref");
+  const card = await new CardService(m.miden, funding, undefined, { vault, keys: m.keys }).issueOneTime(kyc, 500, "ref", { capture: true });
   assert.equal(card.detailsCaptured, true);
   assert.deepEqual(await vault.reveal("card-2", "t"), { pan: "4000000000009999", cvv: "456", expMonth: 7, expYear: 2030, nameOnCard: "Ada Obi", billingZip: "10001" });
   assert.deepEqual(vault.audit.find((a) => a.action === "put")?.purpose, "capture:full-pan");
 });
 
 test("capture failing everywhere still returns the issued card, flagged not captured", async () => {
-  const m = midenFake({ "/api/v2/cards/issue": { isSuccessful: true, responseCode: "000", data: { cardId: "card-3" } } });
+  const m = midenFake({ "/api/v2/cards/issue-lite": { isSuccessful: true, responseCode: "000", data: { cardId: "card-3" } } });
   const logs: string[] = [];
-  const card = await new CardService(m.miden, funding, undefined, { vault: new MemoryCardVault(), keys: m.keys, log: (s) => logs.push(s) }).issue("a", policy, kyc, "ref");
-  assert.equal(card.id, "card-3");
+  const card = await new CardService(m.miden, funding, undefined, { vault: new MemoryCardVault(), keys: m.keys, log: (s) => logs.push(s) }).issueOneTime(kyc, 500, "ref", { capture: true });
+  assert.equal(card.cardId, "card-3");
   assert.equal(card.detailsCaptured, false);
   assert.equal(logs.length, 2);
 });
@@ -180,10 +180,35 @@ test("capture failing everywhere still returns the issued card, flagged not capt
 test("vault down at issue: card still returned, not captured", async () => {
   const uk = "3f2b8c1e-9d4a-4e7b-a1c2-5d6e7f809a1b";
   const secure = midenEncrypt({ CardNumber: "4111111111111111", SecurityCode: "123", Expiration: "0331" }, uk, "key=last");
-  const m = midenFake({ "/api/v2/cards/issue": { isSuccessful: true, responseCode: "000", data: { cardId: "card-4", secureCardDetails: secure } } }, undefined, uk);
+  const m = midenFake({ "/api/v2/cards/issue-lite": { isSuccessful: true, responseCode: "000", data: { cardId: "card-4", secureCardDetails: secure } } }, undefined, uk);
   const broken = { put: async () => { throw new Error("db down"); }, has: async () => { throw new Error("db down"); } };
-  const card = await new CardService(m.miden, funding, undefined, { vault: broken, keys: m.keys }).issue("a", policy, kyc, "ref");
+  const card = await new CardService(m.miden, funding, undefined, { vault: broken, keys: m.keys }).issueOneTime(kyc, 500, "ref", { capture: true });
   assert.equal(card.detailsCaptured, false);
+});
+
+test("a reusable card is never captured: its secureCardDetails are ignored and nothing reaches the vault", async () => {
+  const uk = "3f2b8c1e-9d4a-4e7b-a1c2-5d6e7f809a1b";
+  const secure = midenEncrypt({ CardNumber: "4111111111111111", SecurityCode: "123", Expiration: "0331" }, uk, "key=last");
+  const m = midenFake({ "/api/v2/cards/issue": { isSuccessful: true, responseCode: "000", data: { cardId: "own-1", lastFour: "1111", secureCardDetails: secure } } }, undefined, uk);
+  const vault = new MemoryCardVault();
+  const card = await new CardService(m.miden, funding, undefined, { vault, keys: m.keys }).issue("a", policy, kyc, "ref");
+  assert.equal(card.id, "own-1");
+  assert.equal(card.detailsCaptured, undefined);
+  assert.equal(await vault.has("own-1"), false);
+  assert.deepEqual(vault.audit, []);
+  // No full-PAN fetch either.
+  assert.deepEqual(m.paths, ["/api/v2/cards/issue"]);
+});
+
+test("vaultKeyringFromEnv: current key and id, old keys as id:base64, never echoes a value", () => {
+  const k1 = randomBytes(32).toString("base64"), k2 = randomBytes(32).toString("base64");
+  const ring = vaultKeyringFromEnv({ CARD_VAULT_KEY: k2, CARD_VAULT_KEY_ID: "v2", CARD_VAULT_OLD_KEYS: `v1:${k1}` });
+  assert.equal(ring.current.id, "v2");
+  assert.deepEqual(Object.keys(ring.old ?? {}), ["v1"]);
+  assert.equal(vaultKeyringFromEnv({ CARD_VAULT_KEY: k1 }).current.id, "v1");
+  assert.throws(() => vaultKeyringFromEnv({ CARD_VAULT_KEY: k2, CARD_VAULT_OLD_KEYS: `v1:${k1}` }), /repeats key id v1/);
+  assert.throws(() => vaultKeyringFromEnv({ CARD_VAULT_KEY: k2, CARD_VAULT_KEY_ID: "v2", CARD_VAULT_OLD_KEYS: "v1:c2hvcnQ=" }), (e: Error) => !e.message.includes("c2hvcnQ"));
+  assert.throws(() => vaultKeyringFromEnv({ CARD_VAULT_KEY: k2, CARD_VAULT_KEY_ID: "bad id" }), /CARD_VAULT_KEY_ID/);
 });
 
 // ---- Postgres vault (only with DATABASE_URL) ----
@@ -224,4 +249,80 @@ test("pg vault: sealed at rest, audited, rows bound to their card", { skip: !dat
   assert.deepEqual(audit.map((a) => `${a.card_id}:${a.action}:${a.purpose}`), [
     "c1:put:capture:issue", "c2:put:capture:issue", "c1:reveal:checkout:abc", "nope:reveal_miss:checkout:abc", "c1:reveal:checkout:abc", "c2:reveal:x",
   ]);
+});
+
+async function pgVault() {
+  const schema = `t_${randomBytes(6).toString("hex")}`;
+  await admin!.query(`CREATE SCHEMA ${schema}`);
+  schemas.push(schema);
+  const pool = new pg.Pool({ connectionString: databaseUrl, options: `-c search_path=${schema}`, max: 4 });
+  pools.push(pool);
+  await migrate(pool);
+  return { pool, repo: createCardVaultRepository(createDatabase(pool)) };
+}
+
+test("pg vault: the audit trail cannot be changed, deleted or truncated", { skip: !databaseUrl }, async () => {
+  const { pool, repo } = await pgVault();
+  const v = new SealedCardVault(repo, randomBytes(32));
+  await v.put("c1", D);
+  await v.reveal("c1", "checkout:1");
+  await assert.rejects(pool.query("UPDATE card_vault_audit SET purpose = 'nothing to see'"), /append-only/);
+  await assert.rejects(pool.query("DELETE FROM card_vault_audit"), /append-only/);
+  await assert.rejects(pool.query("TRUNCATE card_vault_audit"), /append-only/);
+  assert.equal((await pool.query("SELECT count(*)::int AS n FROM card_vault_audit")).rows[0].n, 2);
+  // Discarding a card's details is still allowed (it deletes the vault row, and is itself audited).
+  await v.discard("c1", "checkout:1:done");
+  assert.equal(await v.has("c1"), false);
+});
+
+test("pg vault: after a key rotation old rows still open, and rekeyAll moves them to the new key", { skip: !databaseUrl }, async () => {
+  const { pool, repo } = await pgVault();
+  const k1 = randomBytes(32), k2 = randomBytes(32);
+  const before = new SealedCardVault(repo, { current: { id: "v1", key: k1 } });
+  await before.put("c1", D);
+  await before.put("c2", { ...D, pan: "4000000000000002" });
+  const after2 = new SealedCardVault(repo, { current: { id: "v2", key: k2 }, old: { v1: k1 } });
+  assert.deepEqual(await after2.reveal("c1", "t"), D);
+  await after2.put("c3", D);
+  assert.deepEqual(await after2.rekeyAll(), { moved: 2, skipped: [] });
+  assert.deepEqual(await after2.rekeyAll(), { moved: 0, skipped: [] });
+  const ids = (await pool.query("SELECT DISTINCT key_id FROM card_vault")).rows.map((r) => r.key_id);
+  assert.deepEqual(ids, ["v2"]);
+  // Once re-keyed, the new key alone opens everything.
+  const only2 = new SealedCardVault(repo, { current: { id: "v2", key: k2 } });
+  assert.deepEqual(await only2.reveal("c2", "t"), { ...D, pan: "4000000000000002" });
+  // A row under a key this process lacks is reported, not touched.
+  await new SealedCardVault(repo, { current: { id: "v9", key: randomBytes(32) } }).put("c4", D);
+  assert.deepEqual(await only2.rekeyAll(), { moved: 0, skipped: ["c4"] });
+  await assert.rejects(only2.reveal("c4", "t"), /does not have/);
+  const rekeys = (await pool.query("SELECT card_id, purpose FROM card_vault_audit WHERE action = 'rekey' ORDER BY id")).rows;
+  assert.deepEqual(rekeys.map((r) => `${r.card_id}:${r.purpose}`).sort(), ["c1:rekey:v1->v2", "c2:rekey:v1->v2"]);
+});
+
+test("pg migration 012 discards stored reusable-card details but keeps one-time cards'", { skip: !databaseUrl }, async () => {
+  const schema = `t_${randomBytes(6).toString("hex")}`;
+  await admin!.query(`CREATE SCHEMA ${schema}`);
+  schemas.push(schema);
+  const pool = new pg.Pool({ connectionString: databaseUrl, options: `-c search_path=${schema}`, max: 2 });
+  pools.push(pool);
+  // Apply everything before 012, store a reusable and a one-time card's details, then let 012 run.
+  const { readdirSync, readFileSync } = await import("node:fs");
+  const { join, dirname } = await import("node:path");
+  const { fileURLToPath } = await import("node:url");
+  const dir = join(dirname(fileURLToPath(import.meta.url)), "../src/db/migrations");
+  await pool.query("CREATE TABLE ledger_migrations (name TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())");
+  for (const f of readdirSync(dir).filter((f) => f.endsWith(".sql") && f < "012").sort()) {
+    await pool.query(readFileSync(join(dir, f), "utf8"));
+    await pool.query("INSERT INTO ledger_migrations (name) VALUES ($1)", [f]);
+  }
+  const v = new SealedCardVault(createCardVaultRepository(createDatabase(pool)), randomBytes(32));
+  await v.put("own-card", D);
+  await v.put("lite-card", D);
+  await pool.query("INSERT INTO app_user (id, email, token_hash) VALUES ('u1', 'a@b.co', 'h')");
+  await pool.query("INSERT INTO app_one_time_card (one_time_id, user_id, spend_id, card_id, amount_cents, status) VALUES ('ot1', 'u1', 's1', 'lite-card', 500, 'ready')");
+  await migrate(pool);
+  assert.equal(await v.has("own-card"), false);
+  assert.equal(await v.has("lite-card"), true);
+  const discards = (await pool.query("SELECT card_id FROM card_vault_audit WHERE action = 'discard'")).rows.map((r) => r.card_id);
+  assert.deepEqual(discards, ["own-card"]);
 });

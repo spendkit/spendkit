@@ -5,10 +5,24 @@ The sandbox is verified (auth, signing, KYC, card issuance, top-ups, simulated p
 ## Not production-ready, by design
 
 - **Custody:** the deposit mnemonic is a local file. Production needs HSM/KMS or a custody provider, plus sweeping to treasury.
-- **Agent payments:** agents pay only through the sandbox simulator. Real merchants would need card details handed to the agent, which bypasses our limits unless Miden's authorization is customer-managed (item 3).
+- **Agent payments:** agents pay through the sandbox simulator, or through hosted checkouts filled by our server with a one-time card (the agent never sees card details). Card details used anywhere else would bypass our limits unless Miden's authorization is customer-managed (item 3).
 - **Auth:** owner tokens do not expire and signup does not verify email. Production needs email verification or magic-link login.
 - **Finality:** deposits credit after 5 blocks on testnet. Base mainnet must use `finality: "finalized"` (wired in `main.ts` for `chain = base`).
 - **RPC:** the free public RPC has no SLA and returns 429 on `eth_getLogs` for mainnet. Use a paid one.
+
+## PCI DSS (2026-11-16)
+
+Done on branch `pci-hardening`:
+- **No reusable card details are kept.** Every real checkout is paid with a one-time card whose details are held only until its single payment, so no security code is kept after authorization (3.3.1). Migration 012 discarded any reusable-card rows already stored. Checkouts under $1.00 are refused, because that is the smallest one-time card.
+- **Vault audit trail is append-only in the database** (triggers on `card_vault_audit`, 10.3.2).
+- **Vault key rotation:** `CARD_VAULT_KEY_ID` and `CARD_VAULT_OLD_KEYS`, plus `pnpm vault:rekey`. The key still comes from an environment variable; moving to KMS is part of the split.
+- **Owner tokens expire** after `OWNER_TOKEN_IDLE_DAYS` (default 30) without use. **Signups and failed sign-ins are rate limited** per address (in memory, one process).
+
+Still open:
+- **Scope:** split card handling into its own service ([card-service-split.md](card-service-split.md)). The main app keeps PCI scope while it holds Miden credentials that can fetch and decrypt card numbers (the full-PAN endpoint and the `secureCardDetails` keys); this needs a second Miden credential without that access.
+- **Auth:** email verification, a self-service login (today an operator reissues an expired token with `pnpm owner:token-reset`), and MFA for operators.
+- **Rate limits** live in one process; several instances need a shared store.
+- **Environment:** TLS, network segmentation, logging and monitoring, vulnerability scans, penetration tests, written policies and incident response. Then a self-assessment (SAQ D for service providers) or a QSA assessment, whichever Miden requires.
 
 ## Open items
 

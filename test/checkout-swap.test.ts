@@ -226,9 +226,9 @@ async function setup(cfg: Partial<SwapConfig> = {}, opts: { privacy?: boolean; l
   const p = (await app.agentByToken(a.token))!;
   const vault = new MemoryCardVault();
   vaultRef.v = vault;
-  await vault.put(p.cardId, card());
+  // The user's own card is never vaulted: every real checkout is paid with a one-time card.
   const filler = new FakeFiller();
-  if (opts.privacy) filler.expectPan = ONE_TIME_PAN;
+  filler.expectPan = ONE_TIME_PAN;
   const swap = new SwapInteractor({
     swaps: repos.swaps, app, vault, filler, lifecycle, now: () => new Date(clock), ...(opts.live ? { live: opts.live } : {}),
     config: { enabled: true, maxAmountCents: 1_000, allowedHosts: ["checkout.stripe.com"], ...cfg },
@@ -261,11 +261,9 @@ test("swap: pays, debits the agent once, audits the reveal, scrubs the card", { 
   await assert.rejects(s.swap.pay(s.p, req({ amountCents: 900 })), (e: { status?: number }) => e.status === 409, "same key, different payment");
 });
 
-test("swap, Stripe test card: a test link is paid with 4242 without opening the vault; a live link still uses the vault", { skip }, async () => {
+test("swap, Stripe test card: a test link is paid with 4242 without opening the vault; a live link gets a one-time card", { skip }, async () => {
   const s = await setup({ stripeTestCard: true });
   s.filler.expectPan = "4242424242424242";
-  await s.vault.discard(s.p.cardId, "test");
-  await assert.rejects(s.swap.pay(s.p, req({ checkoutUrl: "https://checkout.stripe.com/c/pay/cs_live_b2", idempotencyKey: "k0" })), /not on file/, "a live link still needs the vaulted card");
   const a = await s.swap.pay(s.p, req());
   assert.equal(a.status, "paid");
   assert.equal(await s.balance(), 1_000, "the agent is still debited");
@@ -275,14 +273,13 @@ test("swap, Stripe test card: a test link is paid with 4242 without opening the 
   await s.swap.reconcile();
   assert.equal((await s.swap.get(s.p, a.swapId)).underReview, null, "no card authorization is expected, so nothing goes to review");
 
-  s.filler.expectPan = TEST_CARD.pan;
-  await s.vault.put(s.p.cardId, card());
+  s.filler.expectPan = ONE_TIME_PAN;
   const live = await s.swap.pay(s.p, req({ checkoutUrl: "https://checkout.stripe.com/c/pay/cs_live_b2", amountCents: 500, idempotencyKey: "k2" }));
   assert.equal(live.status, "paid");
-  assert.equal(s.vault.audit.filter((x) => x.action === "reveal").length, 1, "a live link gets the vaulted card");
+  assert.deepEqual(s.vault.audit.filter((x) => x.action === "reveal").map((x) => x.cardId), [s.oneTimeCards[0]], "a live link gets a one-time card");
 });
 
-test("swap, live view: only a Stripe test-card payment is watched; a vaulted card never gets a viewer", { skip }, async () => {
+test("swap, live view: only a Stripe test-card payment is watched; a real card never gets a viewer", { skip }, async () => {
   const feed = new SwapLiveFeed();
   const s = await setup({ stripeTestCard: true }, { live: feed });
   const seen: SwapLiveEvent[] = [];
@@ -300,7 +297,7 @@ test("swap, live view: only a Stripe test-card payment is watched; a vaulted car
   assert.ok(seen.every((e) => e.swapId === a.swapId));
   assert.equal(otherAgent.length, 0, "another agent's viewer sees nothing");
 
-  s.filler.expectPan = TEST_CARD.pan;
+  s.filler.expectPan = ONE_TIME_PAN;
   const live = await s.swap.pay(s.p, req({ checkoutUrl: "https://checkout.stripe.com/c/pay/cs_live_b2", amountCents: 500, idempotencyKey: "k2" }));
   assert.equal(live.status, "paid");
   assert.equal(s.filler.calls[1]!.watch, undefined, "a real card's page is never watched");
@@ -326,7 +323,7 @@ test("swap, Stripe test card: an unclear page result is never matched to a real 
   assert.deepEqual(s.asked, [], "the card network is never asked about a test-card payment");
 });
 
-test("swap: refuses before reserving anything: off, over the cap, wrong host, no key, no card on file", { skip }, async () => {
+test("swap: refuses before reserving anything: off, over the cap, wrong host, no key, under the one-time card minimum", { skip }, async () => {
   const s = await setup();
   const st = (n: number) => (e: { status?: number }) => e.status === n;
   await assert.rejects(s.swap.pay(s.p, req({ amountCents: 1_001 })), st(400));
@@ -335,8 +332,7 @@ test("swap: refuses before reserving anything: off, over the cap, wrong host, no
   await assert.rejects(s.swap.pay(s.p, req({ idempotencyKey: "" })), st(400));
   const off = new SwapInteractor({ ...(s.swap as any).d, config: { enabled: false, maxAmountCents: 1000, allowedHosts: ["checkout.stripe.com"] } });
   await assert.rejects(off.pay(s.p, req()), st(403));
-  const empty = new SwapInteractor({ ...(s.swap as any).d, vault: new MemoryCardVault() });
-  await assert.rejects(empty.pay(s.p, req()), /not on file/);
+  await assert.rejects(s.swap.pay(s.p, req({ amountCents: 99 })), (e: { status?: number; message?: string }) => e.status === 400 && /at least \$1\.00/.test(e.message ?? ""));
   assert.equal(s.filler.calls.length, 0);
   assert.equal(await s.balance(), 2_000);
   assert.equal((await s.pool.query("SELECT count(*)::int AS n FROM app_spend")).rows[0].n, 0);
@@ -387,7 +383,7 @@ test("swap: a decline on the page voids; a 3-D Secure challenge holds the money 
 
   // The card shows the authorization approved (the owner passed 3DS in time).
   await s.age(90_000);
-  s.txns.push({ cardId: s.p.cardId, transactionType: "Authorization", transactionStatus: "Approved", transactionAmount: 10, transactionReference: "tx-1", authCode: "A1", transactionTime: new Date().toISOString().replace("Z", "") });
+  s.txns.push({ cardId: s.oneTimeCards.at(-1), transactionType: "Authorization", transactionStatus: "Approved", transactionAmount: 10, transactionReference: "tx-1", authCode: "A1", transactionTime: new Date().toISOString().replace("Z", "") });
   await s.swap.reconcile();
   const done = await s.swap.get(s.p, t.swapId);
   assert.equal(done.status, "paid");
@@ -402,7 +398,7 @@ test("swap: reconcile voids on a card decline, and flags ambiguity or silence fo
   const a = await s.swap.pay(s.p, req({ idempotencyKey: "a" }));
   assert.equal(a.status, "processing");
   await s.age(90_000);
-  s.txns.push({ cardId: s.p.cardId, transactionType: "Authorization", transactionStatus: "Declined", transactionAmount: 10, transactionReference: "tx-d", transactionTime: now() });
+  s.txns.push({ cardId: s.oneTimeCards.at(-1), transactionType: "Authorization", transactionStatus: "Declined", transactionAmount: 10, transactionReference: "tx-d", transactionTime: now() });
   await s.swap.reconcile();
   assert.equal((await s.swap.get(s.p, a.swapId)).status, "failed");
   assert.equal(await s.balance(), 2_000, "refunded on a definite decline");
@@ -417,7 +413,7 @@ test("swap: reconcile voids on a card decline, and flags ambiguity or silence fo
 
   const c = await s.swap.pay(s.p, req({ idempotencyKey: "c" }));
   await s.age(90_000);
-  for (const ref of ["tx-x", "tx-y"]) s.txns.push({ cardId: s.p.cardId, transactionType: "Authorization", transactionStatus: "Approved", transactionAmount: 10, transactionReference: ref, transactionTime: now() });
+  for (const ref of ["tx-x", "tx-y"]) s.txns.push({ cardId: s.oneTimeCards.at(-1), transactionType: "Authorization", transactionStatus: "Approved", transactionAmount: 10, transactionReference: ref, transactionTime: now() });
   await s.swap.reconcile();
   // Two unclaimed $10 authorizations could each be this payment: never guess.
   assert.equal((await s.swap.get(s.p, c.swapId)).status, "needs_review");
@@ -429,7 +425,7 @@ test("swap: a paid swap is confirmed on the card, and a different merchant categ
   const a = await s.swap.pay(s.p, req({ idempotencyKey: "a", mcc: "5734" }));
   assert.equal(a.status, "paid");
   await s.age(90_000);
-  s.txns.push({ cardId: s.p.cardId, transactionType: "Authorization", transactionStatus: "Approved", transactionAmount: 10, transactionReference: "tx-a", merchantMcc: "5815", transactionTime: now() });
+  s.txns.push({ cardId: s.oneTimeCards.at(-1), transactionType: "Authorization", transactionStatus: "Approved", transactionAmount: 10, transactionReference: "tx-a", merchantMcc: "5815", transactionTime: now() });
   await s.swap.reconcile();
   const av = await s.swap.get(s.p, a.swapId);
   assert.equal(av.status, "paid");
@@ -445,30 +441,16 @@ test("swap: a paid swap is confirmed on the card, and a different merchant categ
   assert.equal(await s.balance(), 0);
 });
 
-test("swap: a second payment of the same amount on the card waits while the first is unsettled (Kai's check)", { skip }, async () => {
+test("swap: same-amount payments no longer wait on each other, since each has its own one-time card", { skip }, async () => {
   const s = await setup();
-  const now = () => new Date().toISOString().replace("Z", "");
   s.filler.next = { outcome: "three_ds", submitted: true };
   const a = await s.swap.pay(s.p, req({ idempotencyKey: "a", amountCents: 400 }));
   assert.equal(a.status, "challenge");
   s.filler.next = { outcome: "succeeded", submitted: true };
-  await assert.rejects(s.swap.pay(s.p, req({ idempotencyKey: "b", amountCents: 400 })), (e: AgentCardsError) => e.status === 409 && /still being confirmed/.test(e.message));
-  assert.equal((await s.pool.query("SELECT count(*)::int AS n FROM app_checkout_swap")).rows[0].n, 1, "nothing written for the refused one");
-  assert.equal((await s.swap.pay(s.p, req({ idempotencyKey: "a", amountCents: 400 }))).swapId, a.swapId, "a retry under the same key is never refused");
-  assert.equal((await s.swap.pay(s.p, req({ idempotencyKey: "c", amountCents: 500 }))).status, "paid", "a different amount is not held up");
-
-  // Left for a person, the first no longer blocks; but a lone authorization that either could own is not guessed.
-  await s.pool.query("UPDATE app_checkout_swap SET status = 'needs_review' WHERE swap_id = $1", [a.swapId]);
-  s.filler.next = { outcome: "error", submitted: true, detail: "timeout" };
   const b = await s.swap.pay(s.p, req({ idempotencyKey: "b", amountCents: 400 }));
-  assert.equal(b.status, "processing");
-  await s.age(90_000);
-  s.txns.push({ cardId: s.p.cardId, transactionType: "Authorization", transactionStatus: "Approved", transactionAmount: 4, transactionReference: "tx-4", transactionTime: now() });
-  await s.swap.reconcile();
-  const bv = await s.swap.get(s.p, b.swapId);
-  assert.equal(bv.status, "needs_review");
-  assert.match(bv.payment!.reason!, /another open payment/);
-  assert.equal((await s.pool.query("SELECT count(*)::int AS n FROM app_checkout_swap WHERE card_txn_ref = 'tx-4'")).rows[0].n, 0, "unclaimed");
+  assert.equal(b.status, "paid", "not held up: an authorization on one card can never be mistaken for the other's");
+  assert.equal(s.oneTimeCards.length, 2);
+  assert.equal(new Set(s.oneTimeCards).size, 2);
 });
 
 test("swap, privacy mode: the page gets a one-time card, the user's own card is never revealed, and the details are discarded", { skip }, async () => {
@@ -482,7 +464,7 @@ test("swap, privacy mode: the page gets a one-time card, the user's own card is 
   assert.deepEqual(s.vault.audit.filter((x) => x.action === "reveal").map((x) => x.cardId), [lite]);
   assert.equal(await s.vault.has(lite), false);
   assert.ok(s.vault.audit.some((x) => x.action === "discard" && x.cardId === lite));
-  assert.equal(await s.vault.has(s.p.cardId), true, "the user's own card is untouched");
+  assert.equal(await s.vault.has(s.p.cardId), false, "the user's own card is never in the vault");
   const row = (await s.pool.query("SELECT charge_card_id FROM app_checkout_swap")).rows[0];
   assert.equal(row.charge_card_id, lite);
   assert.equal(await s.balance(), 1_000);
@@ -533,9 +515,7 @@ test("swap, open hosts: off by default; on, any public https page is paid only w
   await assert.rejects(closed.swap.pay(closed.p, req({ checkoutUrl: SHOP })), /not supported/);
 
   const s = await setup({ openHosts: true });
-  s.filler.expectPan = ONE_TIME_PAN;
-  // Not in privacy mode, and the user's own card is not even needed on file.
-  await s.vault.discard(s.p.cardId, "test");
+  // Not in privacy mode, and the user's own card is never on file.
   const r = await s.swap.pay(s.p, req({ checkoutUrl: SHOP }));
   assert.equal(r.status, "paid");
   assert.equal(s.oneTimeCards.length, 1, "a one-time card was made for this payment");
@@ -544,11 +524,10 @@ test("swap, open hosts: off by default; on, any public https page is paid only w
   assert.equal(s.filler.calls[0]!.watch, undefined, "a real card's page is never watched");
   assert.equal(await s.balance(), 1_000);
 
-  // An allowlisted host still uses the user's own card.
-  s.filler.expectPan = TEST_CARD.pan;
-  await s.vault.put(s.p.cardId, card());
+  // An allowlisted host is paid the same way: a one-time card of its own.
   assert.equal((await s.swap.pay(s.p, req({ idempotencyKey: "k2", amountCents: 500 }))).status, "paid");
-  assert.equal(s.oneTimeCards.length, 1);
+  assert.equal(s.oneTimeCards.length, 2);
+  assert.equal(await s.vault.has(s.p.cardId), false);
 });
 
 test("swap, open hosts: this machine, private networks and plain http are refused before anything is reserved", { skip }, async () => {

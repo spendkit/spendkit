@@ -48,10 +48,9 @@ export class CardService implements CardIssuerPort {
    * `clientReference` must be stable per card (not per agent): it is sent as both the
    * body `clientReference` and, hashed, the Reference header, so retrying an issuance
    * after a timeout with the same value cannot create a second card.
-   * With a CaptureConfig, `secureCardDetails` (encrypted PAN/CVV) is decrypted and sealed into the vault
-   * before this returns; it is never returned, logged or kept. Capture failing does not fail the issue (the
-   * card exists and the wallet was debited): the card comes back with detailsCaptured: false, and
-   * captureDetails() retries through the full-PAN endpoint.
+   * The reusable card's details are never captured: its `secureCardDetails` is ignored, so its number and CVV are
+   * never decrypted, stored or logged here. Checkouts are paid with one-time cards (issueOneTime), whose details are
+   * held only until their single payment (PCI DSS 3.3.1: no security code kept after authorization).
    */
   async issue(agentId: string, policy: SpendPolicy, kyc: CardholderKyc, clientReference: string, initialBalanceDollars = 1): Promise<AgentCard> {
     const res = await this.miden.request<IssueResponse>(
@@ -81,19 +80,14 @@ export class CardService implements CardIssuerPort {
     if (res.isSuccessful !== true || res.responseCode !== "000" || !cardId) {
       throw new Error(`Miden card issuance failed: ${res.responseCode ?? "?"} ${res.responseMessage ?? ""}`);
     }
-    if (!this.capture) return { id: cardId, agentId, policy };
-    const detailsCaptured = await this.captureFromIssue(cardId, res.data!).catch((e: unknown) => {
-      this.capture!.log?.(`card ${cardId}: capture at issue failed: ${(e as Error).message}`);
-      return false;
-    }) || (await this.captureDetails(cardId));
-    return { id: cardId, agentId, policy, detailsCaptured };
+    return { id: cardId, agentId, policy };
   }
 
   /**
    * A one-time card: Miden "Lite" card with one swipe and exactly `amountCents` on it (debited from the funding wallet at
    * issue; Lite cards cannot be topped up). Ends on its first successful use, or at `terminateDate`, whichever is first.
    * `clientReference` must be stable per payment so a retried issue cannot create a second card.
-   * With `capture` and a vault, the details are sealed into the vault like any card's; skip it when only the card id is needed.
+   * With `capture` and a vault, the details are sealed into the vault until the card's one payment; skip it when only the card id is needed.
    */
   async issueOneTime(
     kyc: CardholderKyc, amountCents: number, clientReference: string,

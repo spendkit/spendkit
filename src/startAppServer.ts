@@ -11,7 +11,7 @@ import { createAppServer } from "./createHttpServer.js";
 export function startAppServer(app: AgentCardsApp, config: ServerConfig, log: (m: string) => void): Server[] {
   const hosts = config.host === "127.0.0.1" ? ["127.0.0.1", "::1"] : [config.host];
   return hosts.map((h) => {
-    const s = createAppServer(app, { allowedHosts: config.allowedHosts, webhookOnlyHosts: config.webhookOnlyHosts, log });
+    const s = createAppServer(app, { allowedHosts: config.allowedHosts, webhookOnlyHosts: config.webhookOnlyHosts, trustProxy: config.trustProxy, log });
     s.on("error", (e) => {
       log(`cannot listen on [${h}]:${config.port}: ${e.message}. Is something else on that port?`);
       process.exit(1);

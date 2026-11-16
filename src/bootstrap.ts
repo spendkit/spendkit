@@ -1,7 +1,7 @@
 // Composition root, part 1: reads the environment once and builds every client,
 // repository and adapter into AppParams. Nothing below this file reads process.env.
 import pg from "pg";
-import { SealedCardVault, vaultKeyFromEnv } from "./adapters/cardVault/CardVault.js";
+import { SealedCardVault, vaultKeyringFromEnv } from "./adapters/cardVault/CardVault.js";
 import { RoutingFiller } from "./adapters/checkoutFillers/RoutingFiller.js";
 import { AdaptiveFiller } from "./adapters/checkoutFillers/AdaptiveFiller.js";
 import { ClaudeFormPlanner } from "./adapters/checkoutFillers/FormPlanner.js";
@@ -34,6 +34,8 @@ export interface ServerConfig {
   host: string;
   allowedHosts: string[];
   webhookOnlyHosts: string[];
+  /** TRUST_PROXY=1: a proxy we run sets X-Forwarded-For, so rate limits key on it. */
+  trustProxy: boolean;
   /** Shown in the startup line. */
   rpcHost: string;
 }
@@ -91,10 +93,10 @@ export async function bootstrapApplication(env: NodeJS.ProcessEnv = process.env)
   const addresses = createDepositAddressRepository(db, chain);
 
   // ----- card issuing -----
-  // Card vault: card details are captured at issue time (a provider may give the PAN only once). Without
-  // CARD_VAULT_KEY cards still issue, but their details are not kept and they can never pay hosted checkouts.
-  const vault = env.CARD_VAULT_KEY ? new SealedCardVault(repos.vault, vaultKeyFromEnv(env)) : undefined;
-  if (!vault) log("WARNING: CARD_VAULT_KEY is not set: card details are NOT captured at issue, and checkout swaps are off");
+  // Card vault: holds a one-time card's details from its issue until its single checkout, then forgets them.
+  // Reusable cards' details are never captured. Without CARD_VAULT_KEY, hosted checkouts are off.
+  const vault = env.CARD_VAULT_KEY ? new SealedCardVault(repos.vault, vaultKeyringFromEnv(env)) : undefined;
+  if (!vault) log("WARNING: CARD_VAULT_KEY is not set: one-time card details cannot be held, so checkout swaps are off");
   let lifecycle: CardLifecyclePort;
   let cards: CardIssuerPort;
   let funding: FundingSource;
@@ -204,6 +206,7 @@ export async function bootstrapApplication(env: NodeJS.ProcessEnv = process.env)
     allowLocalWebhooks: sandbox,
     sandbox,
     simulatedDeposits,
+    ownerTokenIdleMs: ownerTokenIdleDays(env) * 86_400_000,
     ...(walletMonitor ? { walletMonitor } : {}),
     alerts,
     log,
@@ -216,7 +219,17 @@ export async function bootstrapApplication(env: NodeJS.ProcessEnv = process.env)
       host: HOST,
       allowedHosts: [`127.0.0.1:${PORT}`, `localhost:${PORT}`, `[::1]:${PORT}`, ...(env.ALLOWED_HOSTS ? env.ALLOWED_HOSTS.split(",") : [])],
       webhookOnlyHosts: env.WEBHOOK_ONLY_HOSTS ? env.WEBHOOK_ONLY_HOSTS.split(",") : [],
+      trustProxy: env.TRUST_PROXY === "1",
       rpcHost: new URL(rpcUrl).host,
     },
   };
+}
+
+/** OWNER_TOKEN_IDLE_DAYS (default 30): an owner token unused this many days stops working. 0 turns expiry off. */
+export function ownerTokenIdleDays(env: NodeJS.ProcessEnv): number {
+  const raw = env.OWNER_TOKEN_IDLE_DAYS;
+  if (raw === undefined || raw === "") return 30;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) throw new Error("OWNER_TOKEN_IDLE_DAYS must be a number of days (0 for never)");
+  return n;
 }

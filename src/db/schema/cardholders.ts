@@ -21,6 +21,8 @@ export const appUser = pgTable(
     externalId: text("external_id"),
     /** Each payment uses a fresh one-time card. Fixed when the user is created, never flipped. */
     privacyMode: boolean("privacy_mode").notNull().default(false),
+    /** When the owner token was last used (to within an hour); it expires after OWNER_TOKEN_IDLE_DAYS without use. */
+    tokenUsedAt: timestamptz("token_used_at").notNull().defaultNow(),
   },
   (t) => [
     check("app_user_tier_check", sql`${t.tier} IN ('quick', 'full')`),

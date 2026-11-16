@@ -2,6 +2,7 @@ import type { AgentCardsApp } from "./createApp.js";
 import { Router } from "./lib/http/Router.js";
 import { authorizeAgent, authorizeDeveloper, authorizeMerchant, authorizeUser } from "./lib/middleware/auth.js";
 import { jsonBody } from "./lib/middleware/bodyParser.js";
+import { rateLimit, RateLimiter } from "./lib/middleware/rateLimit.js";
 import { signup as developerSignup } from "./controllers/developerController.js";
 import { signup as merchantSignup } from "./controllers/merchantController.js";
 import { signup as ownerSignup } from "./controllers/ownerController.js";
@@ -25,17 +26,19 @@ import { webhooksRouter } from "./routes/webhooksRouter.js";
  *   /developer/v1/...          developer API, `Authorization: Bearer dk_...` (POST /developer/v1/signup is open)
  *   /api/...                   owner API, `Authorization: Bearer uk_...` or a `us_` session (POST /api/signup is open)
  */
-export const createRouter = (app: AgentCardsApp): Router => {
+export const createRouter = (app: AgentCardsApp, opts: { trustProxy?: boolean; signupLimit?: number } = {}): Router => {
   const router = new Router();
+  // Signup is open: cap how many accounts one address can make (per kind, per hour).
+  const signups = (what: string) => rateLimit(new RateLimiter(opts.signupLimit ?? 10, 60 * 60_000), what, opts.trustProxy);
   router.include(publicRouter(app));
   router.use("/webhooks/", webhooksRouter(app));
   router.include(mcpRouter(app));
   router.use("/agent/v1/", authorizeAgent(app), agentRouter(app));
-  router.post("/merchant/v1/signup", jsonBody, merchantSignup(app));
+  router.post("/merchant/v1/signup", signups("merchant signup"), jsonBody, merchantSignup(app));
   router.use("/merchant/v1/", authorizeMerchant(app), merchantRouter(app));
-  router.post("/developer/v1/signup", jsonBody, developerSignup(app));
+  router.post("/developer/v1/signup", signups("developer signup"), jsonBody, developerSignup(app));
   router.use("/developer/v1/", authorizeDeveloper(app), developerRouter(app));
-  router.post("/api/signup", jsonBody, ownerSignup(app));
+  router.post("/api/signup", signups("signup"), jsonBody, ownerSignup(app));
   router.use("/api/me", authorizeUser(app), ownerRouter(app));
   return router;
 };

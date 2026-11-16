@@ -87,8 +87,8 @@ export class MockCardProvider implements CardLifecyclePort, CardIssuerPort, Fund
     void kyc;
     const id = `mock-card-${clientReference}`;
     if (!this.cards.has(id)) this.cards.set(id, { balanceCents: Math.round(initialBalanceDollars * 100) });
-    const detailsCaptured = this.opts.vault ? await this.capture(id) : undefined;
-    return { id, agentId, policy, ...(detailsCaptured === undefined ? {} : { detailsCaptured }) };
+    // Like CardService: a reusable card's details are never captured; only one-time cards are vaulted.
+    return { id, agentId, policy };
   }
 
   async issueOneTime(

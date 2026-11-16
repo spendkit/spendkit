@@ -30,6 +30,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "tsx --test --test-concurrency=4 test/*.test.ts",
     "circle:reconcile": "tsx scripts/circle-reconcile.ts",
+    "vault:rekey": "tsx scripts/vault-rekey.ts",
+    "owner:token-reset": "tsx scripts/owner-token-reset.ts",
     "swap:rehearse": "tsx scripts/swap-rehearsal.ts",
     "swap:sandbox-e2e": "tsx scripts/swap-sandbox-e2e.ts",
     "swap:live-test": "tsx scripts/swap-live-test.ts",

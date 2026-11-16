@@ -20,6 +20,8 @@ Which of these you need depends on the mode:
 | `PUBLIC_URL` | `http://127.0.0.1:$PORT` | Base of links the service hands out |
 | `ALLOWED_HOSTS` | none | Extra `Host` headers to accept (comma separated). `127.0.0.1`, `localhost` and `[::1]` on `PORT` are always accepted |
 | `WEBHOOK_ONLY_HOSTS` | none | Hosts that may reach only `/webhooks/*` (for example a tunnel). Do not also list them in `ALLOWED_HOSTS` |
+| `TRUST_PROXY` | off | `1` only behind a proxy you run: rate limits key on `X-Forwarded-For` instead of the socket address |
+| `OWNER_TOKEN_IDLE_DAYS` | `30` | An owner token unused this many days stops working (each use pushes it back). `0` turns expiry off. There is no self-service login yet: an operator reissues one with `pnpm owner:token-reset -- <email>` |
 | `DATABASE_URL` | `postgres://localhost/agent_cards` | Postgres 16. Migrations run at start. `scripts/sandbox-up.sh` fills it in from Docker or Homebrew when unset |
 
 ## Card provider
@@ -31,7 +33,9 @@ Which of these you need depends on the mode:
 | `MIDEN_CLIENT_ID`, `MIDEN_CLIENT_SECRET` | none | OAuth client credentials; the secret also signs requests ([miden-api.md](miden-api.md)) |
 | `MIDEN_UNIQUE_KEY` | none | Sent as the `UniqueKey` header |
 | `MIDEN_WEBHOOK_HASH` | none | HMAC key for `x-signature`; used by `scripts/webhook-*.ts` |
-| `CARD_VAULT_KEY` | none | 32 random bytes, base64 (`openssl rand -base64 32`). Without it card details are not captured and checkout swaps are off. Losing it loses every vaulted card |
+| `CARD_VAULT_KEY` | none | 32 random bytes, base64 (`openssl rand -base64 32`). Seals one-time cards' details between their issue and their single checkout; reusable cards are never captured. Without it checkout swaps are off |
+| `CARD_VAULT_KEY_ID` | `v1` | Id stored with each sealed row. Give a new key a new id when rotating |
+| `CARD_VAULT_OLD_KEYS` | none | During a rotation: previous keys as `id:base64`, comma separated, so their rows still open until `pnpm vault:rekey` moves them. Then remove it and destroy the old key |
 
 ## Deposits and chain
 
@@ -50,7 +54,7 @@ Which of these you need depends on the mode:
 
 ## Checkout swap
 
-Agents paying hosted Stripe checkouts with the vaulted card. Off unless `SWAP_ENABLED=1`; needs `CARD_VAULT_KEY`. See [checkout-swap.md](checkout-swap.md).
+Agents paying hosted checkouts. Every real checkout is paid with a one-time card holding exactly the agreed amount (at least $1.00), discarded from the vault after use; the user's reusable card is never typed into a page. Off unless `SWAP_ENABLED=1`; needs `CARD_VAULT_KEY`. See [checkout-swap.md](checkout-swap.md).
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
@@ -62,7 +66,7 @@ Agents paying hosted Stripe checkouts with the vaulted card. Off unless `SWAP_EN
 | `SWAP_AI_FILL`, `SWAP_AI_MODEL` | on if the key is set | `SWAP_AI_FILL=0` disables; the model is configurable |
 | `SWAP_STRIPE_TEST_CARD` | off | Sandbox only: Stripe test-mode links get the Stripe test card. Refused in production |
 | `SWAP_TEST_HOSTS`, `SWAP_INSECURE_HOSTS` | none | Sandbox only: exact hosts of local test shops (the second allows plain http) |
-| `SWAP_OPEN_HOSTS` | off | Public https checkouts outside the allow-list, paid with a one-time card only |
+| `SWAP_OPEN_HOSTS` | off | Public https checkouts outside the allow-list may be paid too (with a one-time card, like every real checkout) |
 
 ## Production and alerts
 

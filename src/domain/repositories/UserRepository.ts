@@ -14,11 +14,15 @@ export interface UserRepository {
     privacyMode?: boolean;
   }): Promise<InsertOutcome>;
   findById(userId: string): Promise<User | undefined>;
-  findIdByTokenHash(tokenHash: string): Promise<string | undefined>;
+  /** The user whose owner token this is, if it was last used at or after `usedSince` (when given). */
+  findIdByTokenHash(tokenHash: string, usedSince?: Date): Promise<string | undefined>;
+  /** Records that the user's token was used at `at`, but only if the stored time is before `ifBefore` (writes rarely). */
+  touchToken(userId: string, at: Date, ifBefore: Date): Promise<void>;
   findIdByExternalId(developerId: string, externalId: string): Promise<string | undefined>;
   /** The developer's default privacy mode for new users (false if the developer is unknown). */
   developerPrivacyDefault(developerId: string): Promise<boolean>;
-  setTokenHash(userId: string, tokenHash: string): Promise<void>;
+  /** Replaces the token; its idle clock starts at `at`. */
+  setTokenHash(userId: string, tokenHash: string, at?: Date): Promise<void>;
   setKycSubmission(userId: string, reference: string, status: string): Promise<void>;
   setKycStatus(userId: string, status: string): Promise<void>;
   /** Users with a KYC submission, no card yet, and not rejected (for the background poller). */

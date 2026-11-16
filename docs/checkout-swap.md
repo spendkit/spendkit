@@ -1,15 +1,16 @@
 # Checkout swap: agents paying hosted checkouts
 
-An agent pays a third-party hosted checkout page (Stripe Checkout `checkout.stripe.com/c/pay/...`, or a Payment Link `buy.stripe.com/...`). The agent sends the URL and the exact price it agreed to. Our server opens the page and puts in the owner's real card, which it reads from the vault. The agent never sees the card.
+An agent pays a third-party hosted checkout page (Stripe Checkout `checkout.stripe.com/c/pay/...`, or a Payment Link `buy.stripe.com/...`). The agent sends the URL and the exact price it agreed to. Our server makes a one-time card holding exactly that amount, opens the page and puts that card in, reading it from the vault; afterwards its details are discarded. The owner's reusable card is never typed into a page or stored. The agent never sees any card.
 
 ```
 agent ── pay_hosted_checkout(url, amount, merchant, key) ──► SwapInteractor
-  1. validate: swap on, host allowlisted (https), amount ≤ cap ($10), key present, card in vault
+  1. validate: swap on, host allowlisted (https), amount ≤ cap ($10) and ≥ $1.00 (the smallest one-time card), key present
   2. CardholderInteractor.pay under spend key checkout:swap:<swapId>: agent limits, balance, ledger debit
   3. charge (one at a time per process):
-       vault.reveal(card, "checkout:<swapId>")   ← audited, after the debit, just before the page
+       chargeCardFor: issue a one-time card for exactly this amount; its details are sealed into the vault
+       vault.reveal(oneTimeCard, "checkout:<swapId>")   ← audited, after the debit, just before the page
        PlaywrightFiller: load → bot check? → read the total, must equal amount → type card → pay → watch
-       scrub(details) in a finally
+       scrub(details) and vault.discard(oneTimeCard) in a finally
   4. outcome → spend: succeeded = approved · declined / not submitted = voided (debit undone)
                        submitted, no clear answer (3DS, captcha after submit, timeout) = processing (money held)
   5. reconcile (every 5 s tick, after 60 s): match the card's Miden Authorization by amount + time, unclaimed
