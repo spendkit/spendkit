@@ -1,15 +1,80 @@
-# Getting started (developers)
+# Getting started
 
-For developers who want to **accept payments from agents** (the checkout SDK) or **connect an agent** to a Spendkit wallet. About ten minutes to a first paid checkout. Everything here runs in the sandbox: no real money moves.
+Two ways in. **Use Spendkit hosted** if you want agents paying with real cards: there is nothing to run (hosted Spendkit is not live yet; the hosted quickstart below shows how it will work). **Run it locally in test mode** if you want to build and test an integration, or check how Spendkit works, with no accounts and no real money. Out of the box the open-source build never issues real cards (mock provider or Miden sandbox only); real cards will come from the hosted service.
 
-## What you need
+> **TODO (hosting not live yet):** `https://api.spendkit.ai`, its `/mcp` endpoint and the npm package `@spendkit/checkout` are placeholders until the hosted service and the package are published. Until then, use the local quickstart below; the same code runs against `http://127.0.0.1:8787` with the SDK imported by path.
+
+## Hosted quickstart
+
+### 1. Sign up
+
+Create an account at https://api.spendkit.ai (TODO) and complete the short card KYC. Your account gets one card; agents spend from it through their own budgets, so they need no KYC.
+
+### 2. Get your API keys
+
+The dashboard shows each key once (only a hash is stored):
+
+| Key | Prefix | Use it for |
+| --- | --- | --- |
+| Agent token | `ak_` | An agent paying. Made when you create an agent (step 4) |
+| Merchant secret key | `mk_` | Your server creating checkouts, if you take payments from agents. Server side only |
+
+### 3. Fund with USDC
+
+Send USDC on Base to the deposit address on your dashboard. It is credited to your balance once the chain confirms it, then moved onto your card. Send only USDC on Base to that address.
+
+### 4. Create an agent with limits
+
+On the dashboard, create an agent and set its budget, per-payment limit, daily limit and, optionally, allowed merchant categories (MCCs). Or with your owner token:
+
+```sh
+curl -s https://api.spendkit.ai/api/me/agents -H "Authorization: Bearer $SPENDKIT_OWNER_TOKEN" -H "content-type: application/json" \
+  -d '{"name":"research-bot","perTransactionCents":1000,"dailyCents":2500}'      # TODO: URL
+```
+
+The response holds the agent's `ak_` token, shown once. Give it a budget from the dashboard. Every payment is checked against the agent's balance and limits before any money moves.
+
+### 5. Pay
+
+**With the SDK:**
+
+```sh
+npm install @spendkit/checkout   # TODO: not published yet
+```
+
+```ts
+import { SpendkitAgent } from "@spendkit/checkout";
+
+const agent = new SpendkitAgent({ baseUrl: "https://api.spendkit.ai", token: process.env.SPENDKIT_AGENT_TOKEN! }); // TODO: URL
+
+const result = await agent.payCheckout(checkoutUrl, { maxAmountCents: 500 });
+// Refused without charging if the checkout costs more than maxAmountCents.
+// Safe to retry: the same checkout is never paid twice.
+```
+
+**Over MCP**, the agent gets `get_wallet`, `pay`, `list_transactions`, `get_checkout` and `pay_checkout`:
+
+```sh
+# Claude Code
+claude mcp add --transport http spendkit https://api.spendkit.ai/mcp --header "Authorization: Bearer $SPENDKIT_AGENT_TOKEN"   # TODO: URL
+```
+
+Then tell it: "pay the checkout at <checkoutUrl>, at most $5".
+
+**Taking payments as a merchant** is the same SDK with your `mk_` key: `new SpendkitCheckout({ baseUrl, secretKey })`, then `createCheckout`, hand the `checkoutUrl` to the agent, and fulfil when `waitForPayment` says `paid`. Step 3 of the local quickstart walks through it, and the rules there apply hosted too.
+
+## Run it locally (test mode)
+
+For building and testing an integration, or reading how Spendkit handles money and limits. About ten minutes to a first paid checkout. Everything here runs against the mock card provider (or the Miden sandbox): no real cards, no real money.
+
+### What you need
 
 - Node 20+ and pnpm (`pnpm install` in the repo root).
 - Postgres 16. The start script finds one for you: your own (`DATABASE_URL`), else Docker (`docker compose`), else Homebrew `postgresql@16`.
 - **No card-issuer account.** With no `MIDEN_*` set the service uses the built-in mock card provider (in memory, KYC approved at once, Visa test number). To use the Miden sandbox instead, export `MIDEN_CLIENT_ID`, `MIDEN_CLIENT_SECRET` and `MIDEN_UNIQUE_KEY` (see [card providers](card-providers.md)).
 - If you only need to try the SDK against a fake server, skip all of this: `examples/shop` has a test (`shop.test.ts`) that runs against an in-memory stand-in.
 
-## 1. Start the service
+### 1. Start the service
 
 ```sh
 pnpm install
@@ -19,7 +84,7 @@ curl -s http://127.0.0.1:8787/healthz
 
 Stop it with `pnpm dev:down`; the log is `.run/server.log`.
 
-## 2. Get sandbox keys
+### 2. Get sandbox keys
 
 ```sh
 node --import tsx scripts/dev-quickstart.ts
@@ -39,7 +104,7 @@ It moves a few dollars of sandbox money (mock, or Miden if configured) and uses 
 
 Where each key comes from if you want to do it by hand: `mk_` from `POST /merchant/v1/signup` (or `AgentCardsCheckout.signup`), `ak_` from the owner dashboard at http://127.0.0.1:8787 (create an agent and give it a budget) or `POST /api/me/agents`. Both are shown once; only a hash is stored. Rotate with `POST /merchant/v1/key` (merchant) or `POST /api/me/token` (owner).
 
-## 3. Take your first agent payment
+### 3. Take your first agent payment
 
 The SDK lives in `sdk/checkout` and is not published to npm yet (`"private": true`). Import it by path from this repo, as `examples/shop` does:
 
@@ -70,7 +135,7 @@ Rules to build around (details in the [SDK README](../sdk/checkout/README.md)):
 - **The secret key stays on your server.** The SDK refuses to send a key over plain `http` to anything but localhost.
 - Amounts are US cents everywhere.
 
-## 4. See a complete merchant
+### 4. See a complete merchant
 
 `examples/shop` is a small store (cart, server-priced checkout, order page, polling, cancel):
 
@@ -83,7 +148,7 @@ With `AGENT_CARDS_AGENT_TOKEN` set, its order page has a **Pay as demo agent** b
 
 Building a product where your *users* each get a card and agents? The [developer demos](../examples/developer/README.md) cover that path (users, hosted connect page, limits, privacy mode, webhooks).
 
-## 5. Connect a real agent
+### 5. Connect an agent
 
 An agent needs only its `ak_` token. Over MCP it gets `get_wallet`, `pay`, `list_transactions`, `get_checkout` and `pay_checkout`:
 
@@ -111,6 +176,6 @@ Then tell it: "pay the checkout at <checkoutUrl>". To watch an agent use MCP fro
 | Checkout stays `processing` | The card network's answer is late; it settles in the background. A checkout flagged for review needs a person (README, "Ops: clearing a checkout held for review") |
 | `409` on `requestPayout` | Over your available balance, no payout address set, or the new address is still in its waiting period |
 
-## Limits to know about
+## Limits of local mode
 
-Sandbox only. Payments are charged through Miden's purchase simulator, payouts are testnet USDC, there are no webhooks yet (poll), and no refund API. The list of what blocks production is in the top-level README under "Open items".
+Local and sandbox runs only. Payments are charged by the mock provider or Miden's purchase simulator, payouts are testnet USDC, there are no webhooks yet (poll), and no refund API. What blocks production for a self-hosted build is in [production-gaps.md](production-gaps.md).
