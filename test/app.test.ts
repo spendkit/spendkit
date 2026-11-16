@@ -126,6 +126,26 @@ test("KYC approval issues one card with a deposit address; repeat refreshes chan
   assert.equal(o.card?.limits.perTransactionCents, DEFAULT_TIERS.quick.perTransactionCents);
 });
 
+test("TIER_LIMITS: the issued card carries the overridden tier limits, at the provider and on our record", { skip }, async () => {
+  const { tiersFromEnv } = await import("../src/lib/services/tiers.js");
+  const tiers = tiersFromEnv(JSON.stringify({ quick: { perTransactionCents: 1_234, dailyCents: 4_321 } }), { production: false });
+  const s = await setup();
+  const issued: Array<{ perTransactionCents: number; dailyCents: number }> = [];
+  const app = s.make({
+    tiers,
+    cardIssuer: { issue: async (_a: string, policy: { perTransactionCents: number; dailyCents: number }) => { issued.push(policy); return { id: "card-tiered", agentId: "x", policy }; } },
+  } as never);
+  // A fresh user on the app built with the override: KYC approval is what issues the card.
+  const { userId } = await app.signup(`t${randomBytes(3).toString("hex")}@example.com`);
+  await app.submitKyc(userId, KYC);
+  await app.refresh(userId);
+  assert.deepEqual(issued.map((p) => [p.perTransactionCents, p.dailyCents]), [[1_234, 4_321]], "the policy sent to the card provider");
+  const o = await app.overview(userId);
+  assert.deepEqual(o.card?.limits, { perTransactionCents: 1_234, dailyCents: 4_321 }, "the card row");
+  assert.equal(o.card?.lifetimeFundingCapCents, tiers.quick.lifetimeFundedCents);
+  await assert.rejects(app.createAgent(userId, { name: "bot", perTransactionCents: 1_235, dailyCents: 4_321 }), /per-payment limit can be at most/);
+});
+
 test("no card until KYC is approved", { skip }, async () => {
   const s = await setup();
   const t = await s.app.signup("pending@example.com");

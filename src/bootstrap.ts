@@ -27,7 +27,7 @@ import { CircleClient, circleNetwork } from "./lib/clients/circle/CircleClient.j
 import { swapConfigFromEnv } from "./lib/interactors/SwapInteractor.js";
 import { AgentWallets } from "./lib/services/AgentWallets.js";
 import { Ledger } from "./lib/services/Ledger.js";
-import { DEFAULT_TIERS } from "./lib/services/tiers.js";
+import { tiersFromEnv } from "./lib/services/tiers.js";
 
 export interface ServerConfig {
   port: number;
@@ -75,6 +75,8 @@ export async function bootstrapApplication(env: NodeJS.ProcessEnv = process.env)
     if (env.ALLOW_SIMULATED_DEPOSITS === "1") throw new Error("ALLOW_SIMULATED_DEPOSITS=1 is not allowed with APP_ENV=production");
     if (env.SWAP_STRIPE_TEST_CARD === "1") throw new Error("SWAP_STRIPE_TEST_CARD=1 is not allowed with APP_ENV=production");
   }
+  // Before KYC and card issue: a card's limits at the provider are copied from its tier when it is issued.
+  const tiers = tiersFromEnv(env.TIER_LIMITS, { production });
   const baseUrl = env.MIDEN_BASE_URL ?? "https://sandbox-api.midencards.io/miden";
   const sandbox = !production;
   if (sandbox && providerName === "miden" && !SANDBOX_MIDEN_HOSTS.has(new URL(baseUrl).host)) {
@@ -194,7 +196,7 @@ export async function bootstrapApplication(env: NodeJS.ProcessEnv = process.env)
 
   const params: AppParams = {
     pool, db, repos, ledger, addresses,
-    lifecycle, cards, funding, tiers: DEFAULT_TIERS, vault,
+    lifecycle, cards, funding, tiers, vault,
     wallets,
     chain,
     deriveAddress: circle ? async (i) => (await circle.createDepositWallet(i)).address : (i) => hd.address(i),
