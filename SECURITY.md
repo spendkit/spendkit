@@ -16,8 +16,12 @@ Never include real secrets, card numbers, mnemonics or personal data in a report
 
 ## Scope and status
 
-Spendkit is **sandbox only and not production-ready**. It refuses to start against non-sandbox Miden or Circle
-hosts. The known gaps are listed in [docs/production-gaps.md](docs/production-gaps.md); those are not
+The open-source build is **not production-ready**. By default it is sandbox only: unless `APP_ENV=production` is set,
+it refuses any Miden host other than the sandbox, and the Circle client only accepts a `TEST_API_KEY` on Base
+Sepolia (`CIRCLE_NETWORK=BASE` needs a live key, and is not tied to `APP_ENV`). `APP_ENV=production` is the one
+switch that lets it talk to a production Miden host; it then requires explicit https Miden URLs and refuses simulated
+deposits and the Stripe test card (`src/bootstrap.ts`). Do not set it without an issuer contract and your own PCI DSS
+compliance. The known gaps are listed in [docs/production-gaps.md](docs/production-gaps.md); those are not
 vulnerabilities to report, but fixes are welcome.
 
 If you run it anywhere other than your own machine, be aware that:
