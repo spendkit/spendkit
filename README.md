@@ -1,12 +1,71 @@
 # Spendkit
 
-Virtual cards for AI agents, funded with stablecoins. Card issuing is pluggable: a built-in **mock** provider runs with no external accounts, and the [Miden Workspace API](https://docs.miden.co/getting-started) (the card-issuance REST API, not the Miden blockchain) is the first real provider. See [card providers](docs/card-providers.md).
+Virtual cards for AI agents, funded with stablecoins. You fund a wallet with USDC, give each agent a budget and limits, and the agent pays merchants with a card it never sees.
 
-**Status:** works end to end with the mock provider and in the Miden sandbox. **Sandbox only, not production-ready:** see [production gaps](docs/production-gaps.md).
+**Spendkit is a hosted service.** Real cards come only from the hosted service, which holds the card-issuing contract with Miden and carries the PCI obligations. This repository is the code behind it, published so you can check how your money and your agents' limits are handled, and run the whole thing locally in test mode.
 
-## Start here
+## Use Spendkit hosted
 
-- **Integrating a merchant or agent?** [docs/getting-started.md](docs/getting-started.md): `pnpm dev:up`, then `pnpm dev:keys` for sandbox keys and a paid test checkout. Then the [checkout SDK](sdk/checkout/README.md) and the [sample shop](examples/shop/README.md).
+> **TODO (hosting not live yet):** `https://api.spendkit.ai` and the package name `@spendkit/checkout` are placeholders until the hosted service and the npm package are published.
+
+1. **Sign up** at https://api.spendkit.ai (TODO) and complete the short card KYC. Your account gets one card.
+2. **Get an API key.** The dashboard shows your keys once: `ak_...` for an agent, `mk_...` if you also take payments as a merchant.
+3. **Fund with USDC.** Send USDC on Base to the deposit address on your dashboard. It is credited to your balance, then moved onto your card.
+4. **Create an agent with limits:** a budget, a per-payment limit, a daily limit and, if you want, allowed merchant categories. Its `ak_` token is shown once.
+5. **Let the agent pay.** Install the SDK, or add our MCP server to your agent.
+
+```sh
+npm install @spendkit/checkout   # TODO: package not published yet
+```
+
+```ts
+import { SpendkitAgent } from "@spendkit/checkout";
+
+const agent = new SpendkitAgent({ baseUrl: "https://api.spendkit.ai", token: process.env.SPENDKIT_AGENT_TOKEN! });
+await agent.payCheckout(checkoutUrl, { maxAmountCents: 500 }); // refused without charging if the price is higher
+```
+
+Or over MCP (the agent gets `get_wallet`, `pay`, `get_checkout`, `pay_checkout` and `list_transactions`):
+
+```sh
+claude mcp add --transport http spendkit https://api.spendkit.ai/mcp --header "Authorization: Bearer ak_..."   # TODO: URL
+```
+
+The agent's limits and balance are checked on every payment, and paying the same checkout twice never charges twice. Full walkthrough with a merchant side: [docs/getting-started.md](docs/getting-started.md).
+
+## The code is open: check our work, run it locally
+
+Everything that decides whether an agent may spend (the ledger, spend policy, idempotency, deposits, checkout) is in this repo. You can read it, and you can run the whole service on your laptop in **test mode**: a built-in mock card provider, no accounts, no real money. Running this repo does not get you real cards: out of the box it uses the mock provider, or Miden's sandbox if you give it sandbox credentials, and without `APP_ENV=production` it refuses any non-sandbox issuer host (`src/bootstrap.ts`). Real issuing needs an issuer contract and production credentials that are not part of the repo (see [self-hosting](#self-hosting-with-your-own-issuer)).
+
+You need Node 20+, pnpm, and either Docker or a Postgres 16 you can reach.
+
+```
+pnpm install
+pnpm dev:up              # Postgres (Docker, Homebrew, or your DATABASE_URL) + the service on http://127.0.0.1:8787
+pnpm dev:keys            # test keys written to .env.sandbox-keys, then a paid $1.00 test checkout
+open http://127.0.0.1:8787   # owner dashboard
+pnpm dev:down            # stop the service
+```
+
+Connect an agent to your local service (the dashboard shows these with the token filled in):
+
+```
+claude mcp add --transport http agent-cards http://127.0.0.1:8787/mcp --header "Authorization: Bearer ak_..."   # MCP over HTTP
+AGENT_CARDS_URL=http://127.0.0.1:8787 AGENT_CARDS_TOKEN=ak_... node --import tsx src/startMcpStdio.ts          # MCP over stdio
+curl -s http://127.0.0.1:8787/agent/v1/pay -H "Authorization: Bearer ak_..." -H "content-type: application/json" \
+  -d '{"amountCents":500,"merchant":"Example API","mcc":"5734","idempotencyKey":"order-1"}'                    # REST
+```
+
+| Mode | Needs | Good for |
+| --- | --- | --- |
+| Mock (default) | Node, pnpm, Postgres | Trying the API, SDK, MCP and dashboard; building and testing your integration |
+| Issuer sandbox | Miden sandbox credentials and an allow-listed IP | Seeing real issuer behaviour with test money (no real cards) |
+| Circle deposits | Circle API keys ([docs/circle-deposits.md](docs/circle-deposits.md)) | Crediting real testnet USDC deposits |
+
+For the Miden sandbox, export `MIDEN_CLIENT_ID`, `MIDEN_CLIENT_SECRET` and `MIDEN_UNIQUE_KEY` before `pnpm dev:up`; `node --import tsx scripts/sandbox-demo.ts` then runs an end-to-end check with sandbox money. Test USDC: faucet.circle.com, Base Sepolia.
+
+More starting points:
+
 - **Building a product where your users get cards for their agents?** [docs/developers.md](docs/developers.md) and the [developer demos](examples/developer/README.md).
 - **Working on Spendkit itself?** Start with the [architecture](docs/architecture.md), then [docs/](docs/README.md).
 
@@ -21,34 +80,15 @@ Virtual cards for AI agents, funded with stablecoins. Card issuing is pluggable:
 
 Full structure, flows and design decisions: [docs/architecture.md](docs/architecture.md). Details: [sandbox-flow.md](docs/sandbox-flow.md), [deposit-watcher.md](docs/deposit-watcher.md), [checkout-payouts.md](docs/checkout-payouts.md).
 
-## Quickstart (no accounts needed)
+## Self-hosting with your own issuer
 
-You need Node 20+, pnpm, and either Docker or a Postgres 16 you can reach. With no `MIDEN_*` set, the built-in mock card provider is used.
+Possible, but it is real work and few teams will want it. Spendkit hosted issues cards under our issuer contract and PCI scope; a self-hosted build has neither. To issue real cards yourself you would need:
 
-```
-pnpm install
-pnpm dev:up              # Postgres (Docker, Homebrew, or your DATABASE_URL) + the service on http://127.0.0.1:8787
-pnpm dev:keys            # sandbox keys written to .env.sandbox-keys, then a paid $1.00 test checkout
-open http://127.0.0.1:8787   # owner dashboard
-pnpm dev:down            # stop the service
-```
+- **Your own card-issuing contract** (with Miden or another issuer) and the KYC obligations that come with it.
+- **Your own PCI DSS compliance.** The service handles full card numbers (the card vault and the checkout filler), so your deployment is in PCI scope.
+- **Your own production credentials and operations.** `APP_ENV=production` lets the service talk to a production Miden host, but you bring the credentials, a provider if your issuer is not Miden ([card providers](docs/card-providers.md)), and the work in [production gaps](docs/production-gaps.md): key custody, the authorization model, webhooks, a paid RPC.
 
-To use the Miden sandbox instead of the mock, export `MIDEN_CLIENT_ID`, `MIDEN_CLIENT_SECRET` and `MIDEN_UNIQUE_KEY` before `pnpm dev:up`, then `node --import tsx scripts/sandbox-demo.ts` runs an end-to-end check (moves sandbox money). Test USDC: faucet.circle.com, Base Sepolia.
-
-| Mode | Needs | Good for |
-| --- | --- | --- |
-| Mock (default) | Node, pnpm, Postgres | Trying the API, SDK, MCP and dashboard; building your integration |
-| Miden sandbox | Miden sandbox credentials and an allow-listed IP | Real issuer behaviour with test money |
-| Circle deposits | Circle API keys ([docs/circle-deposits.md](docs/circle-deposits.md)) | Crediting real testnet USDC deposits |
-
-Connect an agent (the dashboard shows these with the token filled in):
-
-```
-claude mcp add --transport http agent-cards http://127.0.0.1:8787/mcp --header "Authorization: Bearer ak_..."   # MCP over HTTP
-AGENT_CARDS_URL=http://127.0.0.1:8787 AGENT_CARDS_TOKEN=ak_... node --import tsx src/startMcpStdio.ts          # MCP over stdio
-curl -s http://127.0.0.1:8787/agent/v1/pay -H "Authorization: Bearer ak_..." -H "content-type: application/json" \
-  -d '{"amountCents":500,"merchant":"Example API","mcc":"5734","idempotencyKey":"order-1"}'                    # REST
-```
+If you are weighing this, open an issue first: we would rather help than have you find the gaps in production.
 
 ## Library use
 

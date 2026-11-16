@@ -2,6 +2,8 @@
 
 Written 2026-10-19 from the code in the working tree (parts are still being built; each doc marks what is OPEN).
 
+These docs describe the open-source code. Run locally it uses the mock card provider or the Miden sandbox and never issues real cards; real cards come from hosted Spendkit. To use the hosted service, start with the hosted quickstart in [getting-started.md](getting-started.md).
+
 | Doc | Covers |
 | --- | --- |
 | [configuration.md](configuration.md) | Every environment variable: defaults, which mode needs it |
@@ -9,7 +11,7 @@ Written 2026-10-19 from the code in the working tree (parts are still being buil
 | [../examples/README.md](../examples/README.md) | The examples and how to run them |
 | [circle-deposits.md](circle-deposits.md), [runbook.md](runbook.md), [postgres-production.md](postgres-production.md), [live-usdc-test.md](live-usdc-test.md) | Circle deposit rail, production runbook, Postgres for production, the plan for a live USDC test |
 | [architecture.md](architecture.md) | **Start here if you are working on Spendkit itself.** Components, the ledger, key flows, data model, security model, failure handling, known limits |
-| [getting-started.md](getting-started.md) | **Start here if you are integrating.** Sandbox keys in one command, first agent payment, sample shop, connecting an agent, troubleshooting |
+| [getting-started.md](getting-started.md) | **Start here if you are integrating.** Hosted quickstart (sign up, key, fund, agent, pay), then local test mode: sandbox keys in one command, first agent payment, sample shop, connecting an agent, troubleshooting |
 | [Checkout SDK](../sdk/checkout/README.md) | `@agent-cards/checkout` reference: merchant and agent clients, statuses, payouts, the HTTP API table |
 | [Developer demos](../examples/developer/README.md) | Runnable scripts for the developer API: onboarding and the hosted connect page, agent limits, privacy (one-time card) mode, an MCP agent, a signed-webhook receiver with tests |
 | [Sample shop](../examples/shop/README.md) | A complete merchant built on the SDK, file by file |

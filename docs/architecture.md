@@ -2,7 +2,7 @@
 
 How Spendkit is built: the parts, how money and data move between them, and why it is shaped this way. This is the map. The per-area docs (linked throughout) hold the detail and the runbooks.
 
-Written 2026-10-26 from the code on `main` plus the working tree. **Sandbox only:** `src/main.ts` refuses to start unless `MIDEN_BASE_URL` is the Miden sandbox. What blocks production is in [production-gaps.md](production-gaps.md) and [checkout-payouts.md](checkout-payouts.md#before-mainnet).
+Written 2026-10-26 from the code on `main` plus the working tree. This describes the open-source code, which runs against the mock provider or the Miden sandbox and does not issue real cards; real cards are issued only by hosted Spendkit. Without `APP_ENV=production`, `src/bootstrap.ts` refuses any non-sandbox Miden host. What blocks production is in [production-gaps.md](production-gaps.md) and [checkout-payouts.md](checkout-payouts.md#before-mainnet).
 
 ## Contents
 
@@ -113,7 +113,7 @@ These are the choices that shape everything else. The date is given where one wa
 
 | Decision | Why |
 | --- | --- |
-| **One real card per owner; agents are ledger sub-balances** | Miden caps a customer at 3 cards (sandbox), an AI agent cannot be a KYC subject, and retail cards cannot be issued under a KYB business customer. So agents need no KYC and cost no extra cards. |
+| **One card per owner; agents are ledger sub-balances** | Miden caps a customer at 3 cards (sandbox), an AI agent cannot be a KYC subject, and retail cards cannot be issued under a KYB business customer. So agents need no KYC and cost no extra cards. |
 | **Integer cents and double-entry, enforced in the database** | Money bugs are the expensive kind. Triggers and CHECK constraints make the invariants hold even if application code is wrong. |
 | **Idempotency keys on every money movement** | Retries, crashes and double-clicks must never double-count. |
 | **We do not store identity or card data (with one exception, the vault)** | KYC documents go straight to Miden; we keep a reference and a status. Card details are stored only when `CARD_VAULT_KEY` is set, encrypted, for the hosted-checkout feature. |
@@ -233,7 +233,7 @@ See [checkout-payouts.md](checkout-payouts.md) and [ops.md](ops.md).
 
 ### 5.6 `SwapInteractor` (hosted-checkout payments)
 
-An agent can pay a third-party hosted checkout page (Stripe, Shopify, Lemon Squeezy, Paddle). The agent sends the URL and the exact price it agreed to; our server opens the page in headless Chromium and types the owner's real card, read from the vault. The agent never sees the card.
+An agent can pay a third-party hosted checkout page (Stripe, Shopify, Lemon Squeezy, Paddle). The agent sends the URL and the exact price it agreed to; our server opens the page in headless Chromium and types the owner's card, read from the vault. The agent never sees the card.
 
 Order of operations matters and is the whole design: validate (feature on, host allowlisted, amount under the cap, key present, card in vault) -> **debit through `CardholderInteractor.pay`** -> reveal card details (audited) just before the page -> fill and submit -> scrub the details in a `finally` -> map the outcome back to the spend. Anything ambiguous (3-D Secure, captcha after submit, timeout) leaves the money **held** as `processing`, and a reconcile step matches it against the card's real Miden authorization by amount and time. Statuses: `paid`, `failed`, `challenge`, `processing`, `needs_review`. Full detail in [checkout-swap.md](checkout-swap.md).
 

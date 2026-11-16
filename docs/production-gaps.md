@@ -1,5 +1,7 @@
 # Production gaps and open items
 
+This is what stands between the open-source build and issuing real cards yourself. Hosted Spendkit is where real cards are issued; if you are self-hosting with your own issuer, this list is your to-do list (see the README, "Self-hosting with your own issuer").
+
 The sandbox is verified (auth, signing, KYC, card issuance, top-ups, simulated purchases; 2026-10-19, see [miden-api.md](miden-api.md)). This is what production still needs. Merchant and payout gaps are in [checkout-payouts.md](checkout-payouts.md#before-mainnet).
 
 ## Not production-ready, by design
@@ -27,7 +29,7 @@ Still open:
 ## Open items
 
 1. **Sandbox verification: done.** Amounts are dollars. `clientReference` is not unique on Miden's side, so idempotency rests on the `Reference` header (derived from it); our reference shows in Miden's transaction lists. Webhooks still unverified (item 7).
-2. **Card KYC / cardholder (decided 2026-10-19):** every user does their own quick Card KYC at signup (`src/adapters/onboarding/onboarding.ts`) and gets ONE real card under their own Miden customer (`src/lib/services/tiers.ts`; amounts are placeholders). Agents are ledger sub-balances with their own policy (`src/lib/services/AgentWallets.ts`), so they need no KYC. Why: Miden caps a customer at 3 cards (sandbox), and retail cards cannot be issued under a KYB customer. Agent limits bind only spends through `AgentWallets.spend()`; card details used directly bypass them unless authorization is customer-managed (item 3).
+2. **Card KYC / cardholder (decided 2026-10-19):** every user does their own quick Card KYC at signup (`src/adapters/onboarding/onboarding.ts`) and gets one card under their own Miden customer (`src/lib/services/tiers.ts`; amounts are placeholders). Agents are ledger sub-balances with their own policy (`src/lib/services/AgentWallets.ts`), so they need no KYC. Why: Miden caps a customer at 3 cards (sandbox), and retail cards cannot be issued under a KYB customer. Agent limits bind only spends through `AgentWallets.spend()`; card details used directly bypass them unless authorization is customer-managed (item 3).
 3. **Authorization model, not decided:** Miden-managed (our `authorize()` is advisory; limits must be pushed to Miden) vs customer-managed (Miden calls us per transaction). This is the top production gap (2026-10-19): with real merchants, purchases arrive through Miden's authorization, not `/agent/v1/pay`, so the authorization callback must enforce agent policy and sub-balances (signature-checked with `MIDEN_WEBHOOK_HASH`), and agents must never see card details. Blocked on the decision and on item 7.
 4. **Chain watching (USDC on Base):** built and running on Base Sepolia with our own HD wallet and a free public RPC. Before production: real key custody and sweeping, and a paid RPC.
 5. **Funding the USD wallet:** how received stablecoins become dollars in the Miden USD wallet (bank wire vs Miden stablecoin collection) is open.
