@@ -18,6 +18,7 @@ The agent wallets are not blockchain wallets: see [sandbox-flow.md](sandbox-flow
 
 - **File:** `DEPOSIT_WALLET_FILE`, default `.sandbox-wallet.json` in the working directory. Shape: `{ "note": "TESTNET ONLY…", "mnemonic": "twelve words …" }`.
 - **First boot creates it** if the file does not exist, with mode `0600`. On every load it re-applies `chmod 600` and **throws if the file is readable by group or others**, or if it holds no mnemonic of 12+ words.
+- **Production never uses the file:** with `APP_ENV=production` the mnemonic comes from Secrets Manager (`DEPOSIT_WALLET_SECRET_ID`) and startup refuses without it, so a deploy on a fresh disk cannot mint new keys. Every start also re-derives a sample of the addresses in `deposit_address` and refuses (sandbox: warns) if the seed does not match.
 - **Git-ignored** (`.sandbox-wallet.json` is in `.gitignore`), as are `.env*`, `.sandbox-state.json` and `.run`. Never commit it, paste it into chat, or copy it into another file. Anyone with the mnemonic controls every address, including any funds on them.
 - `address(index)` accepts integers from 0 to 2³¹−1 and returns the lower-case address.
 

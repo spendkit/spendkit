@@ -4,7 +4,7 @@ The sandbox is verified (auth, signing, KYC, card issuance, top-ups, simulated p
 
 ## Not production-ready, by design
 
-- **Custody:** the deposit mnemonic is a local file. Production needs HSM/KMS or a custody provider, plus sweeping to treasury.
+- **Custody:** in production the deposit mnemonic is read from Secrets Manager (`DEPOSIT_WALLET_SECRET_ID`), never generated, and checked against issued addresses at start. It is still one mnemonic in process memory: an HSM/KMS signer or a custody provider, plus sweeping to treasury, is still to do.
 - **Agent payments:** agents pay through the sandbox simulator, or through hosted checkouts filled by our server with a one-time card (the agent never sees card details). Card details used anywhere else would bypass our limits unless Miden's authorization is customer-managed (item 3).
 - **Auth:** owner tokens do not expire and signup does not verify email. Production needs email verification or magic-link login.
 - **Finality:** deposits credit after 5 blocks on testnet. Base mainnet must use `finality: "finalized"` (wired in `main.ts` for `chain = base`).

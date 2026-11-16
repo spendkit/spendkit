@@ -18,9 +18,16 @@ export interface DepositAddressRepository extends DepositAddresses {
    * transfer is credited by one rail only. Rows not yet classified (from before migration 013) belong to neither.
    */
   onRail(rail: DepositRail): DepositAddresses;
+  /** How many rows on this chain have no rail yet (from before migration 013). */
+  unrailedCount(): Promise<number>;
   /**
    * Classifies rows from before migration 013: `isHd(address, derivationIndex)` says whether our HD wallet derives that
    * address; true means 'hd', false 'circle'. Rows without a derivation index predate Circle and are 'hd'. Returns how many it set.
    */
   classifyUnrailed(isHd: (address: string, derivationIndex: number) => boolean): Promise<number>;
+  /**
+   * Up to `limit` addresses on the 'hd' rail with their derivation indexes (lowest and highest first), to check the seed
+   * at startup. Circle wallets and unclassified rows are left out: our seed does not derive them.
+   */
+  derivedSample(limit: number): Promise<{ address: string; derivationIndex: number }[]>;
 }

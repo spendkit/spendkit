@@ -3,11 +3,28 @@ import { english, generateMnemonic, mnemonicToAccount, type HDAccount } from "vi
 
 /**
  * Our own deposit wallet: one BIP-39 mnemonic, one address per card at m/44'/60'/0'/0/<index>.
- * SANDBOX/TESTNET ONLY: the mnemonic sits in a local file (mode 600, git-ignored). Production needs real
- * custody (HSM/KMS or a custody provider) and a sweep to treasury; nothing here sweeps.
+ * Sandbox: the mnemonic sits in a local file (mode 600, git-ignored), created on first use.
+ * Production: the mnemonic comes from a secret store and is never generated here (see depositWalletSeed.ts);
+ * a fresh seed on a deploy would strand every deposit sent to the old addresses. Nothing here sweeps.
  */
 export class HdDepositWallet {
   private constructor(private readonly mnemonic: string) {}
+
+  /** A wallet from a mnemonic held elsewhere (a secret store). Refuses anything that is not a valid English BIP-39 phrase. */
+  static fromMnemonic(phrase: string, source: string): HdDepositWallet {
+    const words = phrase.trim().split(/\s+/);
+    const wordlist = new Set(english);
+    if (![12, 15, 18, 21, 24].includes(words.length) || !words.every((w) => wordlist.has(w))) {
+      throw new Error(`${source} does not hold a valid BIP-39 mnemonic`);
+    }
+    const mnemonic = words.join(" ");
+    try {
+      mnemonicToAccount(mnemonic); // checks the checksum
+    } catch {
+      throw new Error(`${source} does not hold a valid BIP-39 mnemonic (bad checksum)`);
+    }
+    return new HdDepositWallet(mnemonic);
+  }
 
   /** Loads the mnemonic from `path`, creating it on first use. Refuses a file others can read. */
   static loadOrCreate(path: string): HdDepositWallet {
