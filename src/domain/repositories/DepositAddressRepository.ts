@@ -23,4 +23,9 @@ export interface DepositAddressRepository extends DepositAddresses {
    * address; true means 'hd', false 'circle'. Rows without a derivation index predate Circle and are 'hd'. Returns how many it set.
    */
   classifyUnrailed(isHd: (address: string, derivationIndex: number) => boolean): Promise<number>;
+  /**
+   * Up to `limit` addresses on the 'hd' rail with their derivation indexes (lowest and highest first), to check the seed
+   * at startup. Circle wallets and unclassified rows are left out: our seed does not derive them.
+   */
+  derivedSample(limit: number): Promise<{ address: string; derivationIndex: number }[]>;
 }

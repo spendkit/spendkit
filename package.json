@@ -46,6 +46,7 @@
     "typescript": "^7.0.2"
   },
   "dependencies": {
+    "@aws-sdk/client-secrets-manager": "^3.1169.0",
     "@modelcontextprotocol/sdk": "^1.32.2",
     "drizzle-orm": "0.45.4",
     "pg": "^8.23.1",

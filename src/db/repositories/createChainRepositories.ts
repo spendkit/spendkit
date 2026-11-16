@@ -1,4 +1,4 @@
-import { and, asc, eq, isNotNull, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, isNotNull, isNull, sql } from "drizzle-orm";
 import type { CursorStore } from "../../adapters/deposits/BaseUsdcWatcher.js";
 import type { DepositAddressRepository, DepositRail } from "../../domain/repositories/DepositAddressRepository.js";
 import type { Database, Executor } from "../client.js";
@@ -64,6 +64,17 @@ export const createDepositAddressRepository = (db: Database, chain = "base"): De
       .orderBy(asc(depositAddress.derivationIndex))
       .limit(1);
     return row?.address;
+  },
+
+  async derivedSample(limit) {
+    const cols = { address: depositAddress.address, derivationIndex: depositAddress.derivationIndex };
+    const derived = and(eq(depositAddress.chain, chain), eq(depositAddress.rail, "hd"), isNotNull(depositAddress.derivationIndex));
+    const half = Math.max(1, Math.ceil(limit / 2));
+    const low = await db.select(cols).from(depositAddress).where(derived).orderBy(asc(depositAddress.derivationIndex)).limit(half);
+    const high = await db.select(cols).from(depositAddress).where(derived).orderBy(desc(depositAddress.derivationIndex)).limit(half);
+    const seen = new Map<number, string>();
+    for (const r of [...low, ...high]) seen.set(r.derivationIndex!, r.address);
+    return [...seen].map(([derivationIndex, address]) => ({ address, derivationIndex })).slice(0, limit);
   },
 
   async nextDerivationIndex() {

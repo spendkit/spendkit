@@ -49,7 +49,8 @@ Which of these you need depends on the mode:
 | `CHAIN_WATCHER` | off when Circle is on | `1` keeps the derived-address pollers for older addresses |
 | `BASE_RPC_URL` | public Base Sepolia RPC | Chain watchers and payouts |
 | `ETHEREUM_SEPOLIA_RPC_URL` | public Ethereum Sepolia RPC | Ethereum Sepolia watcher |
-| `DEPOSIT_WALLET_FILE` | `.sandbox-wallet.json` | HD deposit wallet seed file (git-ignored). Back it up: it holds the keys |
+| `DEPOSIT_WALLET_FILE` | `.sandbox-wallet.json` | Sandbox only: HD deposit wallet seed file (git-ignored), created on first use. Back it up: it holds the keys |
+| `DEPOSIT_WALLET_SECRET_ID` | none | Secrets Manager id or ARN holding the deposit wallet mnemonic (the bare phrase, or `{"mnemonic": "..."}`). **Required with `APP_ENV=production`**, where `DEPOSIT_WALLET_FILE` must be unset and a seed is never generated. At start the seed must re-derive the deposit addresses already in the database, or production refuses to start (sandbox warns). Needs `secretsmanager:GetSecretValue` on that ARN |
 | `PAYOUT_ADDRESS_DELAY_S` | `600` | Waiting period before a new payout address can be paid |
 
 ## Checkout swap
@@ -72,7 +73,7 @@ Agents paying hosted checkouts. Every real checkout is paid with a one-time card
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `APP_ENV` | unset (sandbox) | `production` is the only way to use a non-sandbox Miden host. It requires `CARD_PROVIDER=miden` and https Miden URLs, and refuses to start with `ALLOW_SIMULATED_DEPOSITS=1` or `SWAP_STRIPE_TEST_CARD=1` |
+| `APP_ENV` | unset (sandbox) | `production` is the only way to use a non-sandbox Miden host. It requires `CARD_PROVIDER=miden`, https Miden URLs and `DEPOSIT_WALLET_SECRET_ID`, and refuses to start with `ALLOW_SIMULATED_DEPOSITS=1` or `SWAP_STRIPE_TEST_CARD=1` |
 | `MIDEN_WALLET_MIN_USD` | `100` in production, off in sandbox | Low-balance alert level, in dollars. Checked every minute; alerts (log and `ALERT_WEBHOOK_URL`) when the Miden USD wallet's available balance is below it, again hourly while it stays low, and once on recovery. Set it above a day's expected top-ups, so there is time to fund the wallet by hand before top-ups fail |
 | `ALERT_WEBHOOK_URL` | none | Slack-compatible webhook that gets `{ text }` for low balance, Circle webhook 5xx, reconcile errors and stuck top-ups |
 | `STUCK_FUNDING_MINUTES` | `15` | Minutes a top-up may sit in `reserved` before it alerts |

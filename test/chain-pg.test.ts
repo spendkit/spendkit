@@ -108,3 +108,19 @@ test("rows from before the rail column are classified by whether our HD wallet d
   assert.equal(await addresses.classifyUnrailed(() => true), 0);
   await assert.rejects(addresses.add(CIRCLE_WALLET, "c", "hd"), /already on the circle rail/);
 });
+
+test("derivedSample: lowest and highest derived addresses on this chain, Circle (non-derived) ones left out", { skip: !databaseUrl }, async () => {
+  const pool = await fresh();
+  const d = createDepositAddressRepository(createDatabase(pool), "base-sepolia");
+  assert.deepEqual(await d.derivedSample(10), []);
+  const addr = (i: number) => `0x${i.toString(16).padStart(40, "0")}`;
+  for (const i of [3, 1, 9, 5, 7]) await d.assign(addr(i), `card-${i}`, i);
+  await d.add(addr(100), "card-circle");
+  // Circle wallets carry a derivation index too (from the shared sequence), but our seed does not derive them.
+  await d.assign(addr(150), "card-circle-2", 150, "circle");
+  await createDepositAddressRepository(createDatabase(pool), "ethereum").assign(addr(200), "card-eth", 200);
+  const all = await d.derivedSample(10);
+  assert.deepEqual(all.map((r) => r.derivationIndex).sort((a, b) => a - b), [1, 3, 5, 7, 9]);
+  assert.ok(all.every((r) => r.address === addr(r.derivationIndex)));
+  assert.deepEqual((await d.derivedSample(2)).map((r) => r.derivationIndex).sort((a, b) => a - b), [1, 9]);
+});
