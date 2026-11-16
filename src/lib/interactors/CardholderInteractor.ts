@@ -38,6 +38,8 @@ export interface CardholderContext {
    * provider would call its API here (hence async), keyed by the same index.
    */
   deriveAddress: (index: number) => string | Promise<string>;
+  /** Which rail credits the addresses `deriveAddress` makes: 'circle' when they are Circle wallets. Default 'hd'. */
+  addressRail?: "hd" | "circle";
   tiers: Record<Tier, TierLimits>;
   /** Ledger chain label for real deposits, e.g. "base-sepolia". */
   chain: string;
@@ -344,7 +346,7 @@ export class CardholderInteractor {
     if (have) return have;
     const idx = await this.d.addresses.nextDerivationIndex();
     const address = (await this.d.deriveAddress(idx)).toLowerCase();
-    await this.d.addresses.assign(address, cardId, idx);
+    await this.d.addresses.assign(address, cardId, idx, this.d.addressRail ?? "hd");
     return address;
   }
 

@@ -13,8 +13,8 @@ const signBody = (b: string) => sign("sha256", Buffer.from(b), ec.privateKey).to
 const ADDR = "0x" + "ab".repeat(20);
 function setup(tx: Partial<CircleTx> = {}, symbol = "USDC") {
   const ledger = new Ledger();
-  const full: CircleTx = { id: "t1", blockchain: "BASE-SEPOLIA", tokenId: "tok", destinationAddress: ADDR, transactionType: "INBOUND", state: "COMPLETE", amounts: ["12.345678"], txHash: "0xAAA", ...tx };
-  const circle = { notificationKey: async () => ({ algorithm: "ECDSA_SHA_256", publicKey: pub }), transaction: async () => full, token: async () => ({ symbol, blockchain: "BASE-SEPOLIA", tokenAddress: BASE_SEPOLIA_USDC.toUpperCase().replace("0X","0x"), decimals: 6 }) };
+  const full: CircleTx = { id: "t1", blockchain: "BASE-SEPOLIA", tokenId: "tok", destinationAddress: ADDR, walletId: "w1", transactionType: "INBOUND", state: "COMPLETE", amounts: ["12.345678"], txHash: "0xAAA", ...tx };
+  const circle = { ownsWallet: async () => true, notificationKey: async () => ({ algorithm: "ECDSA_SHA_256", publicKey: pub }), transaction: async () => full, token: async () => ({ symbol, blockchain: "BASE-SEPOLIA", tokenAddress: BASE_SEPOLIA_USDC.toUpperCase().replace("0X","0x"), decimals: 6 }) };
   const dust: bigint[] = [];
   const d = new CircleDeposits({ circle, ledger, addresses: { cardFor: async (a) => (a.toLowerCase() === ADDR ? "card1" : undefined) }, onDust: (x) => dust.push(x.dustBase) });
   const body = JSON.stringify({ notificationType: "transactions.inbound", notification: { id: "t1", amounts: ["999"] } });
@@ -55,10 +55,10 @@ test("ignored: not complete, not USDC, outbound, unknown address, unsupported ch
 test("reconcile credits a missed deposit once and is a no-op on the next pass", async () => {
   const s = setup();
   const credited: number[] = [];
-  const full: CircleTx = { id: "t9", blockchain: "BASE-SEPOLIA", tokenId: "tok", destinationAddress: ADDR, transactionType: "INBOUND", state: "COMPLETE", amounts: ["5"], txHash: "0xBBB" };
+  const full: CircleTx = { id: "t9", blockchain: "BASE-SEPOLIA", tokenId: "tok", destinationAddress: ADDR, walletId: "w1", transactionType: "INBOUND", state: "COMPLETE", amounts: ["5"], txHash: "0xBBB" };
   const other: CircleTx = { ...full, id: "t8", txHash: "0xCCC", destinationAddress: "0x" + "cd".repeat(20) };
   const d = new CircleDeposits({
-    circle: { notificationKey: async () => ({ algorithm: "", publicKey: pub }), transaction: async () => full, token: async () => ({ symbol: "USDC", blockchain: "BASE-SEPOLIA", tokenAddress: BASE_SEPOLIA_USDC, decimals: 6 }), recentInbound: async () => [full, other] },
+    circle: { ownsWallet: async () => true, notificationKey: async () => ({ algorithm: "", publicKey: pub }), transaction: async () => full, token: async () => ({ symbol: "USDC", blockchain: "BASE-SEPOLIA", tokenAddress: BASE_SEPOLIA_USDC, decimals: 6 }), recentInbound: async () => [full, other] },
     ledger: s.ledger, addresses: { cardFor: async (a) => (a.toLowerCase() === ADDR ? "card1" : undefined) }, onCredited: (r) => credited.push(r.amountCents),
   });
   assert.deepEqual(await d.reconcile(), { checked: 2, credited: 1, ignored: [] });
@@ -69,10 +69,10 @@ test("reconcile credits a missed deposit once and is a no-op on the next pass", 
 
 test("a sub-cent-only transfer is logged as dust once, and reconcile neither repeats it nor lists it as ignored", async () => {
   const s = setup();
-  const tiny: CircleTx = { id: "t7", blockchain: "BASE-SEPOLIA", tokenId: "tok", destinationAddress: ADDR, transactionType: "INBOUND", state: "COMPLETE", amounts: ["0.004"], txHash: "0xEEE" };
+  const tiny: CircleTx = { id: "t7", blockchain: "BASE-SEPOLIA", tokenId: "tok", destinationAddress: ADDR, walletId: "w1", transactionType: "INBOUND", state: "COMPLETE", amounts: ["0.004"], txHash: "0xEEE" };
   const dust: bigint[] = [];
   const d = new CircleDeposits({
-    circle: { notificationKey: async () => ({ algorithm: "", publicKey: pub }), transaction: async () => tiny, token: async () => ({ symbol: "USDC", blockchain: "BASE-SEPOLIA", tokenAddress: BASE_SEPOLIA_USDC, decimals: 6 }), recentInbound: async () => [tiny] },
+    circle: { ownsWallet: async () => true, notificationKey: async () => ({ algorithm: "", publicKey: pub }), transaction: async () => tiny, token: async () => ({ symbol: "USDC", blockchain: "BASE-SEPOLIA", tokenAddress: BASE_SEPOLIA_USDC, decimals: 6 }), recentInbound: async () => [tiny] },
     ledger: s.ledger, addresses: { cardFor: async (a) => (a.toLowerCase() === ADDR ? "card1" : undefined) }, onDust: (x) => dust.push(x.dustBase),
   });
   assert.deepEqual(await d.reconcile(), { checked: 1, credited: 0, ignored: [] });
@@ -85,7 +85,7 @@ test("a sub-cent-only transfer is logged as dust once, and reconcile neither rep
 test("a token called USDC at the wrong contract is not credited", async () => {
   const s = setup();
   const bad = new CircleDeposits({
-    circle: { notificationKey: async () => ({ algorithm: "", publicKey: pub }), transaction: async () => ({ id: "t1", blockchain: "BASE-SEPOLIA", tokenId: "tok", destinationAddress: ADDR, transactionType: "INBOUND", state: "COMPLETE", amounts: ["5"], txHash: "0xDDD" }), token: async () => ({ symbol: "USDC", blockchain: "BASE-SEPOLIA", tokenAddress: "0x" + "11".repeat(20), decimals: 6 }) },
+    circle: { ownsWallet: async () => true, notificationKey: async () => ({ algorithm: "", publicKey: pub }), transaction: async () => ({ id: "t1", blockchain: "BASE-SEPOLIA", tokenId: "tok", destinationAddress: ADDR, walletId: "w1", transactionType: "INBOUND", state: "COMPLETE", amounts: ["5"], txHash: "0xDDD" }), token: async () => ({ symbol: "USDC", blockchain: "BASE-SEPOLIA", tokenAddress: "0x" + "11".repeat(20), decimals: 6 }) },
     ledger: s.ledger, addresses: { cardFor: async () => "card1" },
   });
   assert.match(((await bad.handle(s.body, hdr(s.body))) as { reason: string }).reason, /pinned USDC/);
@@ -96,13 +96,13 @@ test("a key id that is not a UUID, or that Circle does not know, is a 401 withou
   const s = setup();
   await assert.rejects(s.d.handle(s.body, { signature: signBody(s.body), keyId: "../x" }), /bad key id/);
   const unknown = new CircleDeposits({
-    circle: { notificationKey: async () => { throw new CircleError("Circle GET -> 404", 404); }, transaction: async () => ({ id: "t" }), token: async () => ({}) },
+    circle: { ownsWallet: async () => true, notificationKey: async () => { throw new CircleError("Circle GET -> 404", 404); }, transaction: async () => ({ id: "t" }), token: async () => ({}) },
     ledger: s.ledger, addresses: { cardFor: async () => undefined },
   });
   await assert.rejects(unknown.handle(s.body, { signature: signBody(s.body), keyId: "0b1a7c59-8d4e-4f3a-9c21-5e6f7a8b9c0d" }), (e: unknown) => e instanceof CircleError && e.status === 401);
   // Circle refusing our own API key is our fault: not disguised as "unknown key id".
   const refused = new CircleDeposits({
-    circle: { notificationKey: async () => { throw new CircleError("Circle GET -> 403", 403); }, transaction: async () => ({ id: "t" }), token: async () => ({}) },
+    circle: { ownsWallet: async () => true, notificationKey: async () => { throw new CircleError("Circle GET -> 403", 403); }, transaction: async () => ({ id: "t" }), token: async () => ({}) },
     ledger: s.ledger, addresses: { cardFor: async () => undefined },
   });
   await assert.rejects(refused.handle(s.body, { signature: signBody(s.body), keyId: "0b1a7c59-8d4e-4f3a-9c21-5e6f7a8b9c0d" }), (e: unknown) => e instanceof CircleError && e.status === 403);
@@ -172,4 +172,91 @@ test("recentInbound follows pageAfter and stops when a page adds nothing", async
   const c = new CircleClient({ apiKey: "TEST_API_KEY:a:b", entitySecretHex: "ab".repeat(32), walletSetId: "ws", fetch: f });
   assert.equal((await c.recentInbound(new Date())).length, 60);
   assert.equal(urls.length, 2);
+});
+
+// ----- Lin's deposit review (todos tmwg7ufns9, tmwg7ufnsa) -----
+
+const ADDR2 = "0x" + "ef".repeat(20);
+const OURS = new Map([[ADDR, "card1"], [ADDR2, "card2"]]);
+const usdc = async () => ({ symbol: "USDC", blockchain: "BASE-SEPOLIA", tokenAddress: BASE_SEPOLIA_USDC, decimals: 6 });
+const inbound = (o: Partial<CircleTx>): CircleTx => ({ id: "c0", blockchain: "BASE-SEPOLIA", tokenId: "tok", walletId: "w-" + (o.destinationAddress ?? ADDR).slice(2, 6), destinationAddress: ADDR, transactionType: "INBOUND", state: "COMPLETE", amounts: ["5"], txHash: "0xBATCH", ...o });
+function circleWith(txs: CircleTx[], opts: { owns?: (walletId: string, address: string) => boolean; isOwnAddress?: (a: string) => Promise<boolean>; log?: (m: string) => void } = {}) {
+  const ledger = new Ledger();
+  const d = new CircleDeposits({
+    circle: {
+      notificationKey: async () => ({ algorithm: "", publicKey: pub }), transaction: async (id: string) => txs.find((t) => t.id === id)!, token: usdc,
+      recentInbound: async () => txs,
+      // Our wallets are w-<first 4 hex of the address>, all in our set.
+      ownsWallet: async (w: string, a: string) => (opts.owns ?? ((w2, a2) => w2 === "w-" + a2.slice(2, 6)))(w, a.toLowerCase()),
+    },
+    ledger, addresses: { cardFor: async (a) => OURS.get(a.toLowerCase()) },
+    ...(opts.isOwnAddress ? { isOwnAddress: opts.isOwnAddress } : {}),
+    ...(opts.log ? { log: opts.log } : {}),
+  });
+  return { ledger, d };
+}
+
+test("one batched tx paying two of our wallets credits both, and reconcile does not stall on it (tmwg7ufns9)", async () => {
+  const a = inbound({ id: "c1", destinationAddress: ADDR, amounts: ["5"] });
+  const b = inbound({ id: "c2", destinationAddress: ADDR2, amounts: ["7"] }); // same txHash, different log
+  const { ledger, d } = circleWith([a, b]);
+  assert.deepEqual(await d.reconcile(), { checked: 2, credited: 2, ignored: [] });
+  assert.deepEqual(await d.reconcile(), { checked: 2, credited: 0, ignored: [] }); // and again: no throw, no re-credit
+  assert.equal(await ledger.balance(accounts.holding("card1")), 500);
+  assert.equal(await ledger.balance(accounts.holding("card2")), 700);
+});
+
+test("a deposit credited under the old <txHash>:0 key is not credited again under the Circle-id key", async () => {
+  const a = inbound({ id: "c1", destinationAddress: ADDR, amounts: ["5"] });
+  const logs: string[] = [];
+  const { ledger, d } = circleWith([a], { log: (m) => logs.push(m) });
+  await ledger.confirmDeposit({ chain: "circle-base-sepolia", asset: "USDC", cardId: "card1", amountCents: 500, txHash: "0xBATCH", logIndex: 0 });
+  assert.deepEqual(await d.reconcile(), { checked: 1, credited: 0, ignored: [] });
+  assert.equal(await ledger.balance(accounts.holding("card1")), 500);
+  assert.equal(logs.length, 1);
+  assert.match(logs[0]!, /old key: txHash 0xBATCH, card card1, 500 cents/);
+});
+
+test("an inbound transfer whose walletId is not one of our wallets is not credited (tmwg7ufnsa)", async () => {
+  for (const tx of [inbound({ id: "c3", walletId: "someone-elses-wallet" }), inbound({ id: "c4", walletId: undefined })]) {
+    const { ledger, d } = circleWith([tx]);
+    const r = await d.reconcile();
+    assert.equal(r.credited, 0, `walletId ${tx.walletId}`);
+    assert.equal(await ledger.balance(accounts.holding("card1")), 0);
+  }
+});
+
+test("an inbound transfer from one of our own addresses is not a deposit (tmwg7ufnsa)", async () => {
+  const PAYOUT = "0x" + "99".repeat(20);
+  const fromUs = inbound({ id: "c5", sourceAddress: PAYOUT.toUpperCase().replace("0X", "0x") });
+  const { ledger, d } = circleWith([fromUs], { isOwnAddress: async (a) => a === PAYOUT || OURS.has(a) });
+  const r = await d.reconcile();
+  assert.equal(r.credited, 0);
+  assert.equal(await ledger.balance(accounts.holding("card1")), 0);
+  // A stranger's transfer still credits.
+  const { ledger: l2, d: d2 } = circleWith([inbound({ id: "c6", sourceAddress: "0x" + "12".repeat(20) })], { isOwnAddress: async (a) => a === PAYOUT || OURS.has(a) });
+  assert.equal((await d2.reconcile()).credited, 1);
+  assert.equal(await l2.balance(accounts.holding("card1")), 500);
+});
+
+test("ownsWallet: only a wallet of our wallet set at that address; unknown ids are not ours, outages throw", async () => {
+  const wallets: Record<string, object> = { w1: { walletSetId: "ws", address: ADDR.toUpperCase().replace("0X", "0x") }, w2: { walletSetId: "other", address: ADDR } };
+  let calls = 0;
+  let down = false;
+  const f = (async (url: string) => {
+    calls++;
+    if (down) return new Response("{}", { status: 503 });
+    const id = String(url).split("/").pop()!;
+    return wallets[id] ? Response.json({ data: { wallet: wallets[id] } }) : new Response(JSON.stringify({ message: "not found" }), { status: 404 });
+  }) as typeof fetch;
+  const c = new CircleClient({ apiKey: "TEST_API_KEY:a:b", entitySecretHex: "ab".repeat(32), walletSetId: "ws", fetch: f });
+  assert.equal(await c.ownsWallet("w1", ADDR), true);
+  assert.equal(await c.ownsWallet("w1", ADDR2), false); // ours, but not that address
+  assert.equal(await c.ownsWallet("w2", ADDR), false); // another wallet set
+  assert.equal(await c.ownsWallet("w9", ADDR), false); // Circle does not know it
+  const before = calls;
+  assert.equal(await c.ownsWallet("w1", ADDR), true); // cached
+  assert.equal(calls, before);
+  down = true;
+  await assert.rejects(c.ownsWallet("w3", ADDR), /503/);
 });

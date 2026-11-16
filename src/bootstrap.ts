@@ -122,7 +122,10 @@ export async function bootstrapApplication(env: NodeJS.ProcessEnv = process.env)
     log(`card provider: miden (${production ? "PRODUCTION, real money" : "sandbox"})`);
     const minUsd = Number(env.MIDEN_WALLET_MIN_USD ?? (production ? 100 : 0));
     if (!Number.isFinite(minUsd) || minUsd < 0) throw new Error("MIDEN_WALLET_MIN_USD must be a non-negative number of dollars");
-    if (minUsd > 0) walletMonitor = new WalletBalanceMonitor({ miden, minUsd, log, ...(env.ALERT_WEBHOOK_URL ? { alertWebhookUrl: env.ALERT_WEBHOOK_URL } : {}) });
+    if (minUsd > 0) {
+      walletMonitor = new WalletBalanceMonitor({ miden, minUsd, alerts });
+      log(`Miden USD wallet low-balance alert below $${minUsd.toFixed(2)}${env.ALERT_WEBHOOK_URL ? " (log and ALERT_WEBHOOK_URL)" : " (log only: set ALERT_WEBHOOK_URL to be told)"}`);
+    } else if (production) log("WARNING: MIDEN_WALLET_MIN_USD=0: no alert before the Miden USD wallet runs dry");
   }
   const wallets = new AgentWallets(ledger);
   const hd = HdDepositWallet.loadOrCreate(env.DEPOSIT_WALLET_FILE ?? ".sandbox-wallet.json");
@@ -138,9 +141,14 @@ export async function bootstrapApplication(env: NodeJS.ProcessEnv = process.env)
         blockchain: circleNetwork(env), // throws unless key type and network agree (and CIRCLE_LIVE=1 for mainnet)
       })
     : undefined;
+  // Rows from before migration 013 have no rail yet: classify them before anything credits a deposit.
+  const classified = await addresses.classifyUnrailed((a, i) => hd.address(i).toLowerCase() === a);
+  if (classified > 0) log(`deposit addresses: classified ${classified} older address(es) as HD or Circle`);
+  const payoutAccount = hd.payoutAccount();
+  const isOwnAddress = async (a: string) => a.toLowerCase() === payoutAccount.address.toLowerCase() || (await addresses.cardFor(a)) !== undefined;
   const circleDeposits = circle
     ? new CircleDeposits({
-        circle, ledger, addresses, log,
+        circle, ledger, addresses: addresses.onRail("circle"), isOwnAddress, log,
         onCredited: (r) => log(`circle deposit: ${r.amountCents} cents on ${r.chain} for card ${r.cardId}`),
         onDust: (d) => log(`dust ${d.dustBase} base units on ${d.txHash} (not credited)`),
       })
@@ -166,7 +174,6 @@ export async function bootstrapApplication(env: NodeJS.ProcessEnv = process.env)
   // ----- checkouts and payouts -----
   // Merchant payouts: USDC on Base Sepolia from our payout account (m/44'/60'/1'/0/0). Fund it with test USDC
   // (faucet.circle.com, Base Sepolia) and a little Base Sepolia ETH for gas.
-  const payoutAccount = hd.payoutAccount();
   const payoutRail = new UsdcPayoutRail({ rpc, account: payoutAccount, confirmations: 5 });
 
   // ----- hosted-checkout swaps: agents pay third-party hosted checkouts (Stripe) with the vaulted card. Off unless SWAP_ENABLED=1.
@@ -191,13 +198,14 @@ export async function bootstrapApplication(env: NodeJS.ProcessEnv = process.env)
     wallets,
     chain,
     deriveAddress: circle ? async (i) => (await circle.createDepositWallet(i)).address : (i) => hd.address(i),
+    addressRail: circle ? "circle" : "hd",
     ...(circleOnly ? { depositNetworks: [chain], depositRail: "circle" as const } : {}),
     watchedNetworks: circleOnly ? [] : allNetworks,
     circleDeposits,
     publicUrl,
     // Sandbox default 10 minutes so a demo can pay out the same day; the code default (and production) is 24 h.
     payoutAddressDelayMs: Number(env.PAYOUT_ADDRESS_DELAY_S ?? 600) * 1000,
-    isOwnAddress: async (a) => a === payoutAccount.address.toLowerCase() || (await addresses.cardFor(a)) !== undefined,
+    isOwnAddress,
     payoutRail,
     swapConfig,
     // The adaptive filler only ever sees pages SwapInteractor let through: open hosts or test shops, on a one-time or test card.

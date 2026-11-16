@@ -109,15 +109,17 @@ export class Ledger {
     return (await this.store.history(account)).map(freeze);
   }
 
-  /** Stablecoin deposit confirmed on-chain: credit USD 1:1 to the card's holding account. */
-  async confirmDeposit(args: { chain: string; asset: string; cardId: string; amountCents: number; txHash: string; logIndex: number }): Promise<LedgerTransaction> {
+  /**
+   * Stablecoin deposit confirmed on-chain: credit USD 1:1 to the card's holding account. One on-chain transfer is
+   * keyed by chain + tx hash + log index; a rail that cannot see the log index (Circle) passes its own
+   * `transferId` instead, which then is the key and `logIndex` is not used.
+   */
+  async confirmDeposit(args: { chain: string; asset: string; cardId: string; amountCents: number; txHash: string } & ({ logIndex: number; transferId?: undefined } | { transferId: string; logIndex?: undefined })): Promise<LedgerTransaction> {
     requirePositive(args.amountCents, "amountCents");
     requireText(args.chain, "chain");
     if (!this.assets.has(args.asset)) throw new LedgerError(`unsupported asset: ${String(args.asset)}`);
     requireText(args.txHash, "txHash");
-    if (!Number.isSafeInteger(args.logIndex) || args.logIndex < 0) throw new LedgerError("logIndex must be a non-negative integer");
-    // One on-chain transfer = chain + tx hash + log index. Hash case must not matter.
-    const key = `deposit:${args.chain.trim().toLowerCase()}:${args.txHash.trim().toLowerCase()}:${args.logIndex}`;
+    const key = depositKey(args);
     return this.run({
       idempotencyKey: key,
       kind: "deposit",
@@ -463,4 +465,20 @@ function samePostings(a: Posting[], b: Posting[]): boolean {
 
 function freeze(tx: LedgerTransaction): LedgerTransaction {
   return Object.freeze({ ...tx, postings: Object.freeze(tx.postings.map((p) => Object.freeze({ ...p }))) as Posting[] });
+}
+
+/**
+ * The ledger key of a deposit. With `transferId` (a rail's own id for one transfer): `deposit:<chain>:id:<transferId>`.
+ * Otherwise `deposit:<chain>:<txHash>:<logIndex>`. Hash case must not matter; the `id:` segment cannot be a tx hash.
+ */
+export function depositKey(args: { chain: string; txHash?: string; logIndex?: number; transferId?: string }): string {
+  const chain = args.chain.trim().toLowerCase();
+  if (args.transferId !== undefined) {
+    requireText(args.transferId, "transferId");
+    if (/\s|:/.test(args.transferId.trim())) throw new LedgerError("transferId must not contain spaces or colons");
+    return `deposit:${chain}:id:${args.transferId.trim()}`;
+  }
+  requireText(args.txHash, "txHash");
+  if (!Number.isSafeInteger(args.logIndex) || args.logIndex! < 0) throw new LedgerError("logIndex must be a non-negative integer");
+  return `deposit:${chain}:${args.txHash!.trim().toLowerCase()}:${args.logIndex}`;
 }

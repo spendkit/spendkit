@@ -55,6 +55,8 @@ export interface AppParams {
   chain: string;
   /** The deposit address for a unique index (our HD wallet, or a Circle wallet). */
   deriveAddress: (index: number) => string | Promise<string>;
+  /** Which rail credits the addresses `deriveAddress` makes. Default 'hd'. */
+  addressRail?: "hd" | "circle";
   depositNetworks?: string[];
   depositRail?: "circle" | "chain";
   /** Chains the background workers poll; empty when deposits arrive by Circle webhook. */

@@ -69,6 +69,8 @@ export class CircleClient {
   private readonly keys = new Map<string, { algorithm: string; publicKey: string }>();
   private lookups: number[] = [];
   private readonly tokens = new Map<string, CircleToken>();
+  /** walletId -> whether it is a wallet of our wallet set with that address. A wallet's set and address never change. */
+  private readonly owned = new Map<string, string | null>();
 
   constructor(private readonly o: CircleOptions) {
     if (!/^[0-9a-fA-F]{64}$/.test(o.entitySecretHex)) throw new Error("the Circle entity secret must be 64 hex characters");
@@ -171,6 +173,26 @@ export class CircleClient {
     return out;
   }
 
+  /**
+   * True if `walletId` is a wallet in our wallet set (CIRCLE_WALLET_SET_ID) whose address is `address`.
+   * GET /v1/w3s/wallets/{id}; an id Circle does not know (400/404) is not ours. Other failures throw (retry later).
+   */
+  async ownsWallet(walletId: string, address: string): Promise<boolean> {
+    let ours = this.owned.get(walletId);
+    if (ours === undefined) {
+      try {
+        const w = (await this.call<{ data: { wallet: { walletSetId?: string; address?: string } } }>("GET", `/v1/w3s/wallets/${encodeURIComponent(walletId)}`)).data.wallet;
+        ours = w.walletSetId === this.o.walletSetId && typeof w.address === "string" ? w.address.toLowerCase() : null;
+      } catch (e) {
+        if (!(e instanceof CircleError && (e.status === 400 || e.status === 404))) throw e;
+        ours = null;
+      }
+      if (this.owned.size >= 10_000) this.owned.clear();
+      this.owned.set(walletId, ours);
+    }
+    return ours !== null && ours === address.toLowerCase();
+  }
+
   async token(tokenId: string): Promise<CircleToken> {
     const hit = this.tokens.get(tokenId);
     if (hit) return hit;
@@ -186,6 +208,9 @@ export interface CircleTx {
   id: string;
   blockchain?: string;
   tokenId?: string;
+  /** The Circle wallet the transfer belongs to (for an inbound transfer, the receiving wallet). */
+  walletId?: string;
+  sourceAddress?: string;
   destinationAddress?: string;
   transactionType?: string;
   state?: string;
