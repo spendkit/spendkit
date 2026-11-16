@@ -93,6 +93,12 @@ export const createDepositAddressRepository = (db: Database, chain = "base"): De
     };
   },
 
+  async unrailedCount() {
+    const [row] = await db.select({ n: sql<number>`count(*)::int` }).from(depositAddress)
+      .where(and(eq(depositAddress.chain, chain), isNull(depositAddress.rail)));
+    return row?.n ?? 0;
+  },
+
   async classifyUnrailed(isHd) {
     const rows = await db.select({ address: depositAddress.address, derivationIndex: depositAddress.derivationIndex }).from(depositAddress)
       .where(and(eq(depositAddress.chain, chain), isNull(depositAddress.rail)));

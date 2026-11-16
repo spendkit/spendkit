@@ -50,7 +50,7 @@ Which of these you need depends on the mode:
 | `BASE_RPC_URL` | public Base Sepolia RPC | Chain watchers and payouts |
 | `ETHEREUM_SEPOLIA_RPC_URL` | public Ethereum Sepolia RPC | Ethereum Sepolia watcher |
 | `DEPOSIT_WALLET_FILE` | `.sandbox-wallet.json` | Sandbox only: HD deposit wallet seed file (git-ignored), created on first use. Back it up: it holds the keys |
-| `DEPOSIT_WALLET_SECRET_ID` | none | Secrets Manager id or ARN holding the deposit wallet mnemonic (the bare phrase, or `{"mnemonic": "..."}`). **Required with `APP_ENV=production`**, where `DEPOSIT_WALLET_FILE` must be unset and a seed is never generated. At start the seed must re-derive the deposit addresses already in the database, or production refuses to start (sandbox warns). Needs `secretsmanager:GetSecretValue` on that ARN |
+| `DEPOSIT_WALLET_SECRET_ID` | none | Secrets Manager id or ARN holding the deposit wallet mnemonic (the bare phrase, or `{"mnemonic": "..."}`). **Required with `APP_ENV=production`**, where `DEPOSIT_WALLET_FILE` must be unset and a seed is never generated. At start the seed must re-derive the HD deposit addresses already in the database, or production refuses to start (sandbox warns). Production also refuses while any deposit address has no rail (rows from before migration 013): it never classifies them by seed, since a wrong seed would mark real HD addresses as Circle for good. A sandbox run classifies them. Needs `secretsmanager:GetSecretValue` on that ARN |
 | `PAYOUT_ADDRESS_DELAY_S` | `600` | Waiting period before a new payout address can be paid |
 
 ## Checkout swap

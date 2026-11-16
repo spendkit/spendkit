@@ -124,3 +124,36 @@ test("derivedSample: lowest and highest derived addresses on this chain, Circle 
   assert.ok(all.every((r) => r.address === addr(r.derivationIndex)));
   assert.deepEqual((await d.derivedSample(2)).map((r) => r.derivationIndex).sort((a, b) => a - b), [1, 9]);
 });
+
+// ----- Lin's review of #24: a wrong seed must not reclassify pre-013 rows in production -----
+
+test("production refuses to start with unrailed addresses instead of classifying them by a seed it cannot vouch for", { skip: !databaseUrl }, async () => {
+  const { english, generateMnemonic } = await import("viem/accounts");
+  const { HdDepositWallet } = await import("../src/adapters/wallet/HdDepositWallet.js");
+  const { checkWalletMatchesIssued, classifyOlderAddresses } = await import("../src/adapters/wallet/depositWalletSeed.js");
+  const pool = await fresh();
+  const addresses = createDepositAddressRepository(createDatabase(pool), "base-sepolia");
+  const real = HdDepositWallet.fromMnemonic(generateMnemonic(english), "real");
+  const wrong = HdDepositWallet.fromMnemonic(generateMnemonic(english), "wrong");
+  // Real HD addresses from before migration 013: derivation index set, rail NULL.
+  await pool.query(`INSERT INTO deposit_address (chain, address, card_id, derivation_index) VALUES ('base-sepolia', $1, 'a', 1), ('base-sepolia', $2, 'b', 2)`,
+    [real.address(1).toLowerCase(), real.address(2).toLowerCase()]);
+  await pool.query(`INSERT INTO deposit_address (chain, address, card_id, derivation_index) VALUES ('other-chain', $1, 'z', 9)`, ["0x" + "99".repeat(20)]);
+  assert.equal(await addresses.unrailedCount(), 2, "this chain only");
+
+  const prod = { production: true, log: () => {} };
+  // The seed check samples 'hd' rows only, so with every row unrailed it has nothing to test and passes...
+  checkWalletMatchesIssued(wrong, await addresses.derivedSample(10), prod);
+  // ...which is why production must not go on to classify.
+  await assert.rejects(classifyOlderAddresses(addresses, wrong, prod), /refusing to start: 2 deposit address\(es\) have no rail/);
+  await assert.rejects(classifyOlderAddresses(addresses, real, prod), /have no rail/, "not even with the right seed: production never classifies");
+  assert.equal(await addresses.unrailedCount(), 2, "nothing was marked");
+  assert.deepEqual(await addresses.onRail("circle").all(), []);
+
+  // The sandbox still classifies (with the right seed both are HD), and once classified production starts.
+  const logs: string[] = [];
+  assert.equal(await classifyOlderAddresses(addresses, real, { production: false, log: (s) => logs.push(s) }), 2);
+  assert.equal((await addresses.onRail("hd").all()).length, 2);
+  assert.match(logs.join("\n"), /classified 2 older/);
+  assert.equal(await classifyOlderAddresses(addresses, real, prod), 0);
+});

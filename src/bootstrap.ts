@@ -14,7 +14,7 @@ import { MidenWalletFunding } from "./adapters/funding/MidenWalletFunding.js";
 import { UsdcPayoutRail } from "./adapters/payouts/UsdcPayoutRail.js";
 import { CardLifecycle } from "./adapters/virtualCards/CardLifecycle.js";
 import { CardService } from "./adapters/virtualCards/CardService.js";
-import { checkWalletMatchesIssued, loadDepositWallet } from "./adapters/wallet/depositWalletSeed.js";
+import { checkWalletMatchesIssued, classifyOlderAddresses, loadDepositWallet } from "./adapters/wallet/depositWalletSeed.js";
 import { createDatabase } from "./db/client.js";
 import { migrate } from "./db/migrate.js";
 import { createCursorStore, createDepositAddressRepository } from "./db/repositories/createChainRepositories.js";
@@ -144,8 +144,8 @@ export async function bootstrapApplication(env: NodeJS.ProcessEnv = process.env)
       })
     : undefined;
   // Rows from before migration 013 have no rail yet: classify them before anything credits a deposit.
-  const classified = await addresses.classifyUnrailed((a, i) => hd.address(i).toLowerCase() === a);
-  if (classified > 0) log(`deposit addresses: classified ${classified} older address(es) as HD or Circle`);
+  // Production refuses instead: see classifyOlderAddresses.
+  await classifyOlderAddresses(addresses, hd, walletOpts);
   const payoutAccount = hd.payoutAccount();
   const isOwnAddress = async (a: string) => a.toLowerCase() === payoutAccount.address.toLowerCase() || (await addresses.cardFor(a)) !== undefined;
   const circleDeposits = circle

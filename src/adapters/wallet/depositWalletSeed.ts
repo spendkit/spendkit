@@ -81,3 +81,29 @@ export function checkWalletMatchesIssued(wallet: HdDepositWallet, issued: Derive
   if (opts.production) throw new Error(`refusing to start: ${msg}`);
   opts.log(`WARNING: ${msg}. Deposits to the old addresses will not be credited (sandbox, so starting anyway)`);
 }
+
+/**
+ * Classifies deposit addresses from before migration 013 (no rail yet) as 'hd' or 'circle' by whether `wallet` derives
+ * them. That decision is permanent and leans entirely on the seed: with a wrong seed every real HD address would be
+ * marked 'circle' and its deposits never scanned again, and the startup seed check cannot catch it, because it only
+ * samples rows already on the 'hd' rail. So production never classifies: it refuses to start while any row is unrailed
+ * (a production database created after migration 013 has none). The sandbox classifies as before.
+ */
+export async function classifyOlderAddresses(
+  addresses: { unrailedCount(): Promise<number>; classifyUnrailed(isHd: (address: string, derivationIndex: number) => boolean): Promise<number> },
+  wallet: Pick<HdDepositWallet, "address">,
+  opts: DepositWalletOptions,
+): Promise<number> {
+  if (opts.production) {
+    const n = await addresses.unrailedCount();
+    if (n > 0) {
+      throw new Error(`refusing to start: ${n} deposit address(es) have no rail (from before migration 013). Production does not ` +
+        "classify them, because a wrong seed would mark real HD addresses as Circle for good. Classify them in a sandbox run against " +
+        "a copy, or by hand, after checking the seed");
+    }
+    return 0;
+  }
+  const classified = await addresses.classifyUnrailed((a, i) => wallet.address(i).toLowerCase() === a);
+  if (classified > 0) opts.log(`deposit addresses: classified ${classified} older address(es) as HD or Circle`);
+  return classified;
+}
