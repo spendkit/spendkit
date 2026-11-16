@@ -65,7 +65,7 @@ Then tell it: "pay the checkout at <checkoutUrl>, at most $5".
 
 ## Run it locally (test mode)
 
-For building and testing an integration, or reading how Spendkit handles money and limits. About ten minutes to a first paid checkout. Everything here runs against the mock card provider (or the Miden sandbox): no real cards, no real money. Locally the SDK classes are still named `AgentCardsCheckout` / `AgentCardsAgent` and imported by path.
+For building and testing an integration, or reading how Spendkit handles money and limits. About ten minutes to a first paid checkout. Everything here runs against the mock card provider (or the Miden sandbox): no real cards, no real money.
 
 ### What you need
 
