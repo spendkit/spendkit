@@ -20,6 +20,8 @@ test("production refuses http", () => rejects({ ...prod, MIDEN_BASE_URL: "http:/
 test("production refuses the mock provider", () => rejects({ ...prod, CARD_PROVIDER: "mock" }, /needs CARD_PROVIDER=miden/));
 test("without APP_ENV=production a non-sandbox Miden host is refused", () =>
   rejects({ ...prod, APP_ENV: "sandbox", MIDEN_BASE_URL: "https://api.miden.example/miden" }, /sandbox-only unless APP_ENV=production/));
+test("production refuses the placeholder tier caps: TIER_LIMITS is required", () => rejects(prod, /needs TIER_LIMITS/));
+test("production refuses invalid TIER_LIMITS", () => rejects({ ...prod, TIER_LIMITS: '{"quick":{"dailyCents":-1}}' }, /positive whole number/));
 test("unknown APP_ENV is refused", () => rejects({ ...prod, APP_ENV: "prod" }, /APP_ENV must be/));
 
 function monitor(balances: () => Response, minUsd = 100) {

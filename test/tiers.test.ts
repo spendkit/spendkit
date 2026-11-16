@@ -76,3 +76,36 @@ test("limits are per user", async () => {
   await issuer.topUp(a, 5_000, "USDC", "k1");
   await issuer.topUp(b, 5_000, "USDC", "k2");
 });
+
+// ----- TIER_LIMITS: the deployment's tier caps (launch-test todo tmwja3vrvp) -----
+
+test("TIER_LIMITS: unset is the defaults in the sandbox and refused in production", async () => {
+  const { tiersFromEnv, DEFAULT_TIERS } = await import("../src/lib/services/tiers.js");
+  assert.deepEqual(tiersFromEnv(undefined, { production: false }), DEFAULT_TIERS);
+  assert.deepEqual(tiersFromEnv("  ", { production: false }), DEFAULT_TIERS);
+  assert.throws(() => tiersFromEnv(undefined, { production: true }), /APP_ENV=production needs TIER_LIMITS/);
+});
+
+test("TIER_LIMITS: overrides field by field, leaving the rest at the defaults", async () => {
+  const { tiersFromEnv, DEFAULT_TIERS } = await import("../src/lib/services/tiers.js");
+  const t = tiersFromEnv(JSON.stringify({ quick: { perTransactionCents: 2_500, dailyCents: 5_000 } }), { production: true });
+  assert.deepEqual(t.quick, { perTransactionCents: 2_500, dailyCents: 5_000, lifetimeFundedCents: DEFAULT_TIERS.quick.lifetimeFundedCents });
+  assert.deepEqual(t.full, DEFAULT_TIERS.full);
+  assert.equal(DEFAULT_TIERS.quick.perTransactionCents, 5_000, "the defaults themselves are not changed");
+});
+
+test("TIER_LIMITS: refuses bad JSON, unknown tiers or fields, non-positive or fractional cents, and inconsistent caps", async () => {
+  const { tiersFromEnv } = await import("../src/lib/services/tiers.js");
+  const bad = (v: unknown, re: RegExp) => assert.throws(() => tiersFromEnv(typeof v === "string" ? v : JSON.stringify(v), { production: false }), re);
+  bad("{quick:", /must be JSON/);
+  bad([1], /JSON object keyed by tier/);
+  bad({ gold: {} }, /unknown tier "gold"/);
+  bad({ quick: 5 }, /TIER_LIMITS.quick must be an object/);
+  bad({ quick: { perTxn: 1 } }, /unknown field "perTxn"/);
+  bad({ quick: { dailyCents: 0 } }, /positive whole number/);
+  bad({ quick: { dailyCents: 10.5 } }, /positive whole number/);
+  bad({ quick: { dailyCents: "100" } }, /positive whole number/);
+  bad({ quick: { perTransactionCents: 9_000, dailyCents: 8_000 } }, /perTransactionCents cannot be more than dailyCents/);
+  bad({ quick: { dailyCents: 60_000 } }, /dailyCents cannot be more than lifetimeFundedCents/);
+  bad({ quick: { perTransactionCents: 200_000, dailyCents: 400_000, lifetimeFundedCents: 1_000_000 } }, /quick.perTransactionCents cannot be more than full/);
+});
