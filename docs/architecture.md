@@ -2,7 +2,7 @@
 
 How Spendkit is built: the parts, how money and data move between them, and why it is shaped this way. This is the map. The per-area docs (linked throughout) hold the detail and the runbooks.
 
-Written 2026-10-26 from the code on `main` plus the working tree. This describes the open-source code, which runs against the mock provider or the Miden sandbox and does not issue real cards; real cards are issued only by hosted Spendkit. Without `APP_ENV=production`, `src/bootstrap.ts` refuses any non-sandbox Miden host. What blocks production is in [production-gaps.md](production-gaps.md) and [checkout-payouts.md](checkout-payouts.md#before-mainnet).
+Written 2026-10-26 from the code on `main` plus the working tree. This describes the open-source code, which runs against the mock provider or the Miden sandbox and does not issue real cards; real cards will be issued only by hosted Spendkit (not live yet). Without `APP_ENV=production`, `src/bootstrap.ts` refuses any non-sandbox Miden host. What blocks production is in [production-gaps.md](production-gaps.md) and [checkout-payouts.md](checkout-payouts.md#before-mainnet).
 
 ## Contents
 

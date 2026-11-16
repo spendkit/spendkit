@@ -1,6 +1,6 @@
 # Production gaps and open items
 
-This is what stands between the open-source build and issuing real cards yourself. Hosted Spendkit is where real cards are issued; if you are self-hosting with your own issuer, this list is your to-do list (see the README, "Self-hosting with your own issuer").
+This is what stands between the open-source build and issuing real cards yourself. Hosted Spendkit is where real cards will be issued once it is live; if you are self-hosting with your own issuer, this list is your to-do list (see the README, "Self-hosting with your own issuer").
 
 The sandbox is verified (auth, signing, KYC, card issuance, top-ups, simulated purchases; 2026-10-19, see [miden-api.md](miden-api.md)). This is what production still needs. Merchant and payout gaps are in [checkout-payouts.md](checkout-payouts.md#before-mainnet).
 

@@ -1,6 +1,6 @@
 # Getting started
 
-Two ways in. **Use Spendkit hosted** if you want agents paying with real cards: there is nothing to run. **Run it locally in test mode** if you want to build and test an integration, or check how Spendkit works, with no accounts and no real money. The open-source build never issues real cards; that happens only on the hosted service.
+Two ways in. **Use Spendkit hosted** if you want agents paying with real cards: there is nothing to run (hosted Spendkit is not live yet; the hosted quickstart below shows how it will work). **Run it locally in test mode** if you want to build and test an integration, or check how Spendkit works, with no accounts and no real money. Out of the box the open-source build never issues real cards (mock provider or Miden sandbox only); real cards will come from the hosted service.
 
 > **TODO (hosting not live yet):** `https://api.spendkit.ai`, its `/mcp` endpoint and the npm package `@spendkit/checkout` are placeholders until the hosted service and the package are published. Until then, use the local quickstart below; the same code runs against `http://127.0.0.1:8787` with the SDK imported by path.
 

@@ -2,7 +2,7 @@
 
 Virtual cards for AI agents, funded with stablecoins. You fund a wallet with USDC, give each agent a budget and limits, and the agent pays merchants with a card it never sees.
 
-**Spendkit is a hosted service.** Real cards come only from the hosted service, which holds the card-issuing contract with Miden and carries the PCI obligations. This repository is the code behind it, published so you can check how your money and your agents' limits are handled, and run the whole thing locally in test mode.
+**Spendkit is a hosted service.** Real cards will be issued only by hosted Spendkit, which is where the issuer contract and the PCI DSS obligations sit. **Hosted Spendkit is not live yet**; until it is, everything here runs in test mode. This repository is the code behind it, published so you can check how your money and your agents' limits are handled, and run the whole thing locally in test mode.
 
 ## Use Spendkit hosted
 
@@ -82,7 +82,7 @@ Full structure, flows and design decisions: [docs/architecture.md](docs/architec
 
 ## Self-hosting with your own issuer
 
-Possible, but it is real work and few teams will want it. Spendkit hosted issues cards under our issuer contract and PCI scope; a self-hosted build has neither. To issue real cards yourself you would need:
+Possible, but it is real work and few teams will want it. Hosted Spendkit will issue cards under our issuer contract and our PCI DSS compliance; a self-hosted build has neither. To issue real cards yourself you would need:
 
 - **Your own card-issuing contract** (with Miden or another issuer) and the KYC obligations that come with it.
 - **Your own PCI DSS compliance.** The service handles full card numbers (the card vault and the checkout filler), so your deployment is in PCI scope.

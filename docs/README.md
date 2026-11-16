@@ -2,7 +2,7 @@
 
 Written 2026-10-19 from the code in the working tree (parts are still being built; each doc marks what is OPEN).
 
-These docs describe the open-source code. Run locally it uses the mock card provider or the Miden sandbox and never issues real cards; real cards come from hosted Spendkit. To use the hosted service, start with the hosted quickstart in [getting-started.md](getting-started.md).
+These docs describe the open-source code. Run locally it uses the mock card provider or the Miden sandbox and never issues real cards; real cards will come from hosted Spendkit (not live yet). To use the hosted service, start with the hosted quickstart in [getting-started.md](getting-started.md).
 
 | Doc | Covers |
 | --- | --- |
