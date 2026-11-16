@@ -500,8 +500,8 @@ test("swap, privacy mode: same-amount payments run side by side, and reconcile r
 
 test("swap, privacy mode: no one-time card means nothing is typed and nothing is charged", { skip }, async () => {
   const s = await setup({}, { privacy: true });
-  // Swap in a card service that cannot make cards.
-  (s.app as any).d.cardIssuer = { ...(s.app as any).d.cardIssuer, issueOneTime: async () => { throw new MidenApiError("POST", "/api/v2/cards/issue-lite", 400, JSON.stringify({ responseCode: "111", responseMessage: "Maximum Number of Cards Per customer Limit 3 Exceeded" })); } };
+  // Swap in a card service that cannot make cards. Patched in place: the app and the card charger share this issuer.
+  Object.assign((s.app as any).d.cardIssuer, { issueOneTime: async () => { throw new MidenApiError("POST", "/api/v2/cards/issue-lite", 400, JSON.stringify({ responseCode: "111", responseMessage: "Maximum Number of Cards Per customer Limit 3 Exceeded" })); } });
   const r = await s.swap.pay(s.p, req());
   assert.equal(r.status, "failed");
   assert.match(r.payment!.reason!, /Limit 3 Exceeded/);
