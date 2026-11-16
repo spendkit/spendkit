@@ -7,10 +7,14 @@ agent ── pay_hosted_checkout(url, amount, merchant, key) ──► SwapInter
   1. validate: swap on, host allowlisted (https), amount ≤ cap ($10) and ≥ $1.00 (the smallest one-time card), key present
   2. CardholderInteractor.pay under spend key checkout:swap:<swapId>: agent limits, balance, ledger debit
   3. charge (one at a time per process):
-       chargeCardFor: issue a one-time card for exactly this amount; its details are sealed into the vault
-       vault.reveal(oneTimeCard, "checkout:<swapId>")   ← audited, after the debit, just before the page
-       PlaywrightFiller: load → bot check? → read the total, must equal amount → type card → pay → watch
-       scrub(details) and vault.discard(oneTimeCard) in a finally
+       prepareOneTime (main app): one-time policy (≥ $1, daily cap, one attempt per spend, KYC approved)
+       CardCharger.charge (the cardholder-data boundary, LocalCardCharger today; see card-service-split.md):
+         issue a one-time card for exactly this amount; its details are sealed into the vault
+         cardIssued → settleOneTime + setChargeCard   ← recorded before the page, so reconcile can find the card
+         vault.reveal(oneTimeCard, "checkout:<swapId>")   ← audited, after the debit, just before the page
+         PlaywrightFiller: load → bot check? → read the total, must equal amount → type card → pay → watch
+         scrub(details) and vault.discard(oneTimeCard) in a finally
+       only card-free facts come back (fill outcome, submitted, card id/last4/state)
   4. outcome → spend: succeeded = approved · declined / not submitted = voided (debit undone)
                        submitted, no clear answer (3DS, captcha after submit, timeout) = processing (money held)
   5. reconcile (every 5 s tick, after 60 s): match the card's Miden Authorization by amount + time, unclaimed

@@ -1,3 +1,4 @@
+import { LocalCardCharger } from "./adapters/cardCharger/LocalCardCharger.js";
 import type { CircleDeposits } from "./adapters/deposits/CircleDeposits.js";
 import type { AppParams } from "./domain/types/ContextTypes.js";
 import { CardholderInteractor } from "./lib/interactors/CardholderInteractor.js";
@@ -50,7 +51,10 @@ export function createApp(p: AppParams): AgentCardsApp & Required<Pick<AgentCard
   });
   const live = p.swapConfig.enabled && p.swapConfig.stripeTestCard ? new SwapLiveFeed() : undefined;
   const swaps = p.swapConfig.enabled && p.vault
-    ? new SwapInteractor({ swaps: p.repos.swaps, app: cardholders, vault: p.vault, filler: p.checkoutFiller, lifecycle: p.lifecycle, config: p.swapConfig, live, log: p.log })
+    ? new SwapInteractor({
+        swaps: p.repos.swaps, app: cardholders, lifecycle: p.lifecycle, config: p.swapConfig, live, log: p.log,
+        charger: new LocalCardCharger({ cardIssuer: p.cards, vault: p.vault, filler: p.checkoutFiller, log: p.log }),
+      })
     : undefined;
   const payouts = new PayoutInteractor({ db: p.db, payouts: p.repos.payouts, ledger: p.ledger, checkout: checkouts, rail: p.payoutRail, log: p.log });
   return { cardholders, checkouts, swaps, swapLive: swaps ? live : undefined, developers, payouts, circleDeposits: p.circleDeposits, alerts: p.alerts, log: p.log };

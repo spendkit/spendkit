@@ -12,6 +12,8 @@ import type { OpenSpendResult } from "../../domain/repositories/SpendRepository.
 import type { FundingStatus } from "../../domain/repositories/FundingRepository.js";
 import type { OneTimeCardStatus } from "../../domain/repositories/OneTimeCardRepository.js";
 import { CardProviderApiError, DuplicateReferenceError, isDefiniteRefusal, providerMessage } from "../../domain/errors/CardProviderErrors.js";
+import type { ChargeCardResult } from "../../domain/interfaces/CardCharger.js";
+import { issueOneTimeCard, oneTimeIssueRefusal } from "../services/issueOneTimeCard.js";
 import type { CardIssuerPort, CardLifecyclePort, CardTransaction, IndividualKyc } from "../../domain/interfaces/CardIssuing.js";
 import { evaluate, type SpendPolicy } from "../services/spendPolicy.js";
 import { capPolicy, type Tier, type TierLimits } from "../services/tiers.js";
@@ -86,6 +88,11 @@ export interface SpendView {
 
 /** Miden's minimum useful top-up for us; smaller holding balances wait for more deposits. */
 const MIN_FUNDING_CENTS = 100;
+/** What prepareOneTime decided: reuse this spend's ready card, or issue one with these facts. */
+export type OneTimePrep =
+  | { kind: "ready"; cardId: string }
+  | { kind: "issue"; rowId: string; ref: string; cardholder: { customerId: string; kycToken: string } };
+
 export const ONE_TIME_MIN_CENTS = 100;
 /** How stale an owner token's last-used time may get before a use rewrites it. */
 const TOKEN_TOUCH_EVERY_MS = 60 * 60 * 1000;
@@ -635,17 +642,38 @@ export class CardholderInteractor {
   }
 
   /**
-   * The card a payment is charged to: the user's own card, or, in privacy mode, a one-time card issued for exactly this
-   * payment (after the agent's limits passed and its money was debited). One row per spend, written before the issue
-   * call, so the same spend never gets two cards and a crash mid-issue is flagged, not guessed at.
+   * The card a simulated payment is charged to: the user's own card, or, in privacy mode, a one-time card issued for
+   * exactly this payment (after the agent's limits passed and its money was debited). Hosted checkouts do not come
+   * here: they run the same policy through prepareOneTime and leave the issue to the CardCharger.
    * Throws an AgentCardsError when no card could be made; the caller then undoes the debit (nothing was charged).
-   * `needDetails`: also seal the card's details into the vault (a hosted-checkout fill needs them; the simulator does not).
-   * `forceOneTime`: a one-time card even outside privacy mode (a checkout on a host that is not on the swap allowlist).
    */
-  async chargeCardFor(p: AgentPrincipal, spendId: string, amountCents: number, opts: { needDetails: boolean; forceOneTime?: boolean }): Promise<string> {
-    if (!opts.forceOneTime && !(await this.privacyMode(p.userId))) return p.cardId;
+  async chargeCardFor(p: AgentPrincipal, spendId: string, amountCents: number): Promise<string> {
+    if (!(await this.privacyMode(p.userId))) return p.cardId;
+    const prep = await this.prepareOneTime(p, spendId, amountCents);
+    if (prep.kind === "ready") return prep.cardId;
+    const out = await issueOneTimeCard(this.d.cardIssuer, prep.cardholder, amountCents, prep.ref, false);
+    if (out.kind === "refused") {
+      await this.settleOneTime(prep, spendId, { state: "none", detail: out.why });
+      throw unprocessableError(oneTimeIssueRefusal.refused(out.why));
+    }
+    if (out.kind === "lost") {
+      await this.settleOneTime(prep, spendId, { state: "unknown", detail: `issue answer lost: ${out.why}` });
+      throw unavailableError(oneTimeIssueRefusal.lost);
+    }
+    await this.settleOneTime(prep, spendId, { state: "issued", id: out.cardId });
+    return out.cardId;
+  }
+
+  /**
+   * The one-time card policy, run in the main app before any card is issued: at least $1, at most ONE_TIME_MAX_PER_DAY
+   * per user, one attempt per spend (a row written before the issue, so the same spend never gets two cards and a
+   * crash mid-issue is flagged, not guessed at), and an approved cardholder.
+   * Returns the card to reuse when this spend already has a ready one, else what the issuer needs.
+   * Throws an AgentCardsError when no card may be made (nothing was charged).
+   */
+  async prepareOneTime(p: AgentPrincipal, spendId: string, amountCents: number): Promise<OneTimePrep> {
     const prior = await this.d.oneTimeCards.findBySpend(spendId);
-    if (prior?.status === "ready" && prior.cardId) return prior.cardId;
+    if (prior?.status === "ready" && prior.cardId) return { kind: "ready", cardId: prior.cardId };
     // Miden loads at least $1 on a Lite card, so a smaller payment would park the rest of a dollar on a single-swipe card.
     if (!prior && amountCents < ONE_TIME_MIN_CENTS) throw unprocessableError("privacy mode needs a payment of at least $1.00 (the smallest one-time card); nothing was charged");
     // A card that is refused or abandoned keeps its funds until it terminates, so cap how fast one user can make cards.
@@ -655,11 +683,11 @@ export class CardholderInteractor {
     }
     if (prior) throw conflictError("a one-time card for this payment was already attempted and needs a person to look at it; nothing was charged");
     const rowId = newId("ot", 8);
-    const mark = (status: OneTimeCardStatus, detail: string | null, cardId?: string) => this.d.oneTimeCards.mark(rowId, status, detail, cardId);
     if ((await this.d.oneTimeCards.start({ oneTimeId: rowId, userId: p.userId, spendId, amountCents })) === "duplicate") {
       // A concurrent attempt for the same spend won the unique index.
       throw conflictError("a one-time card for this payment is already being made; nothing was charged");
     }
+    const mark = (status: OneTimeCardStatus, detail: string | null) => this.d.oneTimeCards.mark(rowId, status, detail);
     const user = await this.user(p.userId);
     let kyc: { status: string; customerId?: string; kycToken?: string };
     try {
@@ -672,28 +700,31 @@ export class CardholderInteractor {
       await mark("failed", `KYC status ${kyc.status}`);
       throw conflictError("the cardholder is not approved, so no one-time card can be made; nothing was charged");
     }
-    let out: { cardId: string; detailsCaptured: boolean };
-    try {
-      out = await this.d.cardIssuer.issueOneTime({ customerId: kyc.customerId, kycToken: kyc.kycToken }, amountCents, `ot-${spendId}`, { capture: opts.needDetails });
-    } catch (e) {
-      if (isDefiniteRefusal(e)) {
-        const why = e instanceof CardProviderApiError ? providerMessage(e) : errText(e);
-        await mark("failed", why.slice(0, 200));
-        throw unprocessableError(`could not make a one-time card (${why}); nothing was charged`);
-      }
-      // A timeout or lost answer: the card may exist (and hold the money). Never guess; a person decides.
-      await mark("needs_review", `issue answer lost: ${errText(e)}`.slice(0, 200));
-      this.log(`one-time card for spend ${spendId}: issue answer lost, flagged for review`);
-      throw unavailableError("the one-time card could not be confirmed; nothing was charged and the attempt is flagged for review");
+    return { kind: "issue", rowId, ref: `ot-${spendId}`, cardholder: { customerId: kyc.customerId, kycToken: kyc.kycToken } };
+  }
+
+  /** Records what became of a one-time card issue started by prepareOneTime (card-free facts from the issuer or charger). */
+  async settleOneTime(prep: Extract<OneTimePrep, { kind: "issue" }>, spendId: string, card: ChargeCardResult): Promise<void> {
+    const mark = (status: OneTimeCardStatus, detail: string | null, cardId?: string) => this.d.oneTimeCards.mark(prep.rowId, status, detail, cardId);
+    switch (card.state) {
+      case "issued":
+        await mark("ready", null, card.id);
+        await this.d.spends.setChargeCard(spendId, card.id);
+        this.log(`one-time card ${card.id.slice(0, 8)} made for spend ${spendId}`);
+        return;
+      case "none":
+        await mark("failed", card.detail.slice(0, 200));
+        return;
+      case "unknown":
+        await mark("needs_review", card.detail.slice(0, 200));
+        this.log(`one-time card for spend ${spendId}: issue answer lost, flagged for review`);
+        return;
+      case "unusable":
+        await mark("needs_review", card.detail.slice(0, 200), card.id);
+        return;
+      case "test":
+        throw new Error("settleOneTime: the test card is not a one-time card");
     }
-    if (opts.needDetails && !out.detailsCaptured) {
-      await mark("needs_review", "card issued but its details could not be captured", out.cardId);
-      throw badGatewayError("the one-time card was made but its details were unavailable; nothing was charged and the card is flagged for review");
-    }
-    await mark("ready", null, out.cardId);
-    await this.d.spends.setChargeCard(spendId, out.cardId);
-    this.log(`one-time card ${out.cardId.slice(0, 8)} made for spend ${spendId}`);
-    return out.cardId;
   }
 
   // ---------- agents (agent side) ----------
@@ -835,7 +866,7 @@ export class CardholderInteractor {
     }
     let cardId: string;
     try {
-      cardId = await this.chargeCardFor(p, spendId, r.amountCents, { needDetails: false });
+      cardId = await this.chargeCardFor(p, spendId, r.amountCents);
     } catch (e) {
       if (!(e instanceof AgentCardsError)) throw e;
       await this.d.wallets.voidSpend(spendId, verdict.tx);

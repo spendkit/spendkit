@@ -1,3 +1,4 @@
+import { LocalCardCharger } from "../src/adapters/cardCharger/LocalCardCharger.js";
 import { test, after, before } from "node:test";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
@@ -198,21 +199,22 @@ async function setup(cfg: Partial<SwapConfig> = {}, opts: { privacy?: boolean; l
   let clock = Date.now();
   const vaultRef: { v?: MemoryCardVault } = {};
   const oneTimeCards: string[] = [];
+  const cardIssuer = {
+    issue: async (_a: string, policy: unknown) => ({ id: `card-${randomBytes(3).toString("hex")}`, agentId: "x", policy, detailsCaptured: true }),
+    // Like the real service: a one-time card's details are sealed into the vault when it is issued.
+    issueOneTime: async (_k: unknown, _amount: number, _ref: string, o: { capture: boolean }) => {
+      const cardId = `lite-${randomBytes(3).toString("hex")}`;
+      if (o.capture) await vaultRef.v!.put(cardId, { ...card(), pan: ONE_TIME_PAN });
+      oneTimeCards.push(cardId);
+      return { cardId, lastFour: ONE_TIME_PAN.slice(-4), detailsCaptured: o.capture };
+    },
+  };
   const app = new CardholderInteractor({
     users: repos.users, cards: repos.cards, agents: repos.agents, spends: repos.spends, fundings: repos.fundings, oneTimeCards: repos.oneTimeCards,
     ledger, wallets: new AgentWallets(ledger), addresses: createDepositAddressRepository(db, "base-sepolia"),
     deriveAddress: (i: number) => `0x${i.toString(16).padStart(40, "0")}`, tiers: DEFAULT_TIERS, chain: "base-sepolia", sandbox: true, simulatedDeposits: true,
     lifecycle,
-    cardIssuer: {
-      issue: async (_a: string, policy: unknown) => ({ id: `card-${randomBytes(3).toString("hex")}`, agentId: "x", policy, detailsCaptured: true }),
-      // Like the real service: a one-time card's details are sealed into the vault when it is issued.
-      issueOneTime: async (_k: unknown, _amount: number, _ref: string, o: { capture: boolean }) => {
-        const cardId = `lite-${randomBytes(3).toString("hex")}`;
-        if (o.capture) await vaultRef.v!.put(cardId, { ...card(), pan: ONE_TIME_PAN });
-        oneTimeCards.push(cardId);
-        return { cardId, lastFour: ONE_TIME_PAN.slice(-4), detailsCaptured: o.capture };
-      },
-    },
+    cardIssuer,
     funding: { fund: async () => ({ id: "m1", status: "confirmed" as const }) },
     now: () => new Date(clock),
   } as unknown as CardholderContext);
@@ -229,8 +231,9 @@ async function setup(cfg: Partial<SwapConfig> = {}, opts: { privacy?: boolean; l
   // The user's own card is never vaulted: every real checkout is paid with a one-time card.
   const filler = new FakeFiller();
   filler.expectPan = ONE_TIME_PAN;
+  const charger = new LocalCardCharger({ cardIssuer, vault, filler, log: () => {} });
   const swap = new SwapInteractor({
-    swaps: repos.swaps, app, vault, filler, lifecycle, now: () => new Date(clock), ...(opts.live ? { live: opts.live } : {}),
+    swaps: repos.swaps, app, charger, lifecycle, now: () => new Date(clock), ...(opts.live ? { live: opts.live } : {}),
     config: { enabled: true, maxAmountCents: 1_000, allowedHosts: ["checkout.stripe.com"], ...cfg },
   });
   const balance = () => ledger.balance(accounts.agent(p.cardId, a.agentId));
@@ -497,8 +500,8 @@ test("swap, privacy mode: same-amount payments run side by side, and reconcile r
 
 test("swap, privacy mode: no one-time card means nothing is typed and nothing is charged", { skip }, async () => {
   const s = await setup({}, { privacy: true });
-  // Swap in a card service that cannot make cards.
-  (s.app as any).d.cardIssuer = { ...(s.app as any).d.cardIssuer, issueOneTime: async () => { throw new MidenApiError("POST", "/api/v2/cards/issue-lite", 400, JSON.stringify({ responseCode: "111", responseMessage: "Maximum Number of Cards Per customer Limit 3 Exceeded" })); } };
+  // Swap in a card service that cannot make cards. Patched in place: the app and the card charger share this issuer.
+  Object.assign((s.app as any).d.cardIssuer, { issueOneTime: async () => { throw new MidenApiError("POST", "/api/v2/cards/issue-lite", 400, JSON.stringify({ responseCode: "111", responseMessage: "Maximum Number of Cards Per customer Limit 3 Exceeded" })); } });
   const r = await s.swap.pay(s.p, req());
   assert.equal(r.status, "failed");
   assert.match(r.payment!.reason!, /Limit 3 Exceeded/);
