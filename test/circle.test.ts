@@ -180,7 +180,7 @@ const ADDR2 = "0x" + "ef".repeat(20);
 const OURS = new Map([[ADDR, "card1"], [ADDR2, "card2"]]);
 const usdc = async () => ({ symbol: "USDC", blockchain: "BASE-SEPOLIA", tokenAddress: BASE_SEPOLIA_USDC, decimals: 6 });
 const inbound = (o: Partial<CircleTx>): CircleTx => ({ id: "c0", blockchain: "BASE-SEPOLIA", tokenId: "tok", walletId: "w-" + (o.destinationAddress ?? ADDR).slice(2, 6), destinationAddress: ADDR, transactionType: "INBOUND", state: "COMPLETE", amounts: ["5"], txHash: "0xBATCH", ...o });
-function circleWith(txs: CircleTx[], opts: { owns?: (walletId: string, address: string) => boolean; isOwnAddress?: (a: string) => Promise<boolean> } = {}) {
+function circleWith(txs: CircleTx[], opts: { owns?: (walletId: string, address: string) => boolean; isOwnAddress?: (a: string) => Promise<boolean>; log?: (m: string) => void } = {}) {
   const ledger = new Ledger();
   const d = new CircleDeposits({
     circle: {
@@ -191,6 +191,7 @@ function circleWith(txs: CircleTx[], opts: { owns?: (walletId: string, address: 
     },
     ledger, addresses: { cardFor: async (a) => OURS.get(a.toLowerCase()) },
     ...(opts.isOwnAddress ? { isOwnAddress: opts.isOwnAddress } : {}),
+    ...(opts.log ? { log: opts.log } : {}),
   });
   return { ledger, d };
 }
@@ -207,10 +208,13 @@ test("one batched tx paying two of our wallets credits both, and reconcile does 
 
 test("a deposit credited under the old <txHash>:0 key is not credited again under the Circle-id key", async () => {
   const a = inbound({ id: "c1", destinationAddress: ADDR, amounts: ["5"] });
-  const { ledger, d } = circleWith([a]);
+  const logs: string[] = [];
+  const { ledger, d } = circleWith([a], { log: (m) => logs.push(m) });
   await ledger.confirmDeposit({ chain: "circle-base-sepolia", asset: "USDC", cardId: "card1", amountCents: 500, txHash: "0xBATCH", logIndex: 0 });
   assert.deepEqual(await d.reconcile(), { checked: 1, credited: 0, ignored: [] });
   assert.equal(await ledger.balance(accounts.holding("card1")), 500);
+  assert.equal(logs.length, 1);
+  assert.match(logs[0]!, /old key: txHash 0xBATCH, card card1, 500 cents/);
 });
 
 test("an inbound transfer whose walletId is not one of our wallets is not credited (tmwg7ufnsa)", async () => {

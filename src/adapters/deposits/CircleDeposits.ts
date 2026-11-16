@@ -115,7 +115,10 @@ export class CircleDeposits {
     // Keyed on Circle's transaction id: one on-chain tx can pay two of our wallets (a batched transfer), and Circle does
     // not give the log index, so the tx hash alone is not one transfer. Credits made before this key existed used
     // `<txHash>:0`; one there for the same card and amount is this transfer, already credited.
-    if (await this.creditedUnderLegacyKey(label, tx.txHash, cardId, cents)) return { status: "credited", cardId, amountCents: cents, chain, isNew: false };
+    if (await this.creditedUnderLegacyKey(label, tx.txHash, cardId, cents)) {
+      this.d.log?.(`circle deposit ${tx.id} matched a credit under the old key: txHash ${tx.txHash}, card ${cardId}, ${cents} cents (not credited again)`);
+      return { status: "credited", cardId, amountCents: cents, chain, isNew: false };
+    }
     // Only for the log line: whether this call is the one that credits. The ledger key is what prevents a double credit.
     const isNew = !(await this.d.ledger.findByKey(depositKey({ chain: label, transferId: tx.id })));
     await this.d.ledger.confirmDeposit({ chain: label, asset: "USDC", cardId, amountCents: cents, txHash: tx.txHash, transferId: tx.id });
