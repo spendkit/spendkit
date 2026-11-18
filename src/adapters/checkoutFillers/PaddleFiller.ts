@@ -1,6 +1,7 @@
 import type { Browser, FrameLocator, Locator, Page } from "playwright-core";
 import { parseUsdCents, type CheckoutFiller, type FillRequest, type FillResult } from "./CheckoutFiller.js";
 import { THREE_DS_FRAME, captchaShown, cardFree, digits, hasFrame, isEditable, pad2, usd } from "./PlaywrightFiller.js";
+import { guarded, openGuardedContext } from "./egressGuard.js";
 
 /**
  * Fills a Paddle Billing checkout in headless Chromium: a hosted checkout (https://pay.paddle.io/hsc_...), or a
@@ -57,15 +58,20 @@ export class PaddleFiller implements CheckoutFiller {
     const own = !this.o.browser;
     const browser = this.o.browser ?? (await (await import("playwright-core")).chromium.launch({ headless: this.o.headless ?? true }));
     // A fresh context per attempt: no cookies, storage or autofill carried between payments.
-    const context = await browser.newContext({ locale: "en-US", serviceWorkers: "block" });
+    // Behind the fence: no private network, redirects included, and no leaving the vetted hosts before paying.
+    const guard = await openGuardedContext(browser, { startUrl: req.url, ...(req.navHosts ? { navHosts: req.navHosts } : {}) }, { locale: "en-US", serviceWorkers: "block" });
+    const context = guard.context;
     let submitted = false;
     try {
       const page = await context.newPage();
-      return await this.run(page, req, () => (submitted = true));
+      return guarded(guard, await this.run(page, req, () => {
+        submitted = true;
+        guard.submitted();
+      }));
     } catch (e) {
-      return { outcome: "error", submitted, detail: cardFree(e, req) };
+      return { outcome: "error", submitted, detail: guard.violation ?? cardFree(e, req) };
     } finally {
-      await context.close().catch(() => undefined);
+      await guard.close();
       if (own) await browser.close().catch(() => undefined);
     }
   }

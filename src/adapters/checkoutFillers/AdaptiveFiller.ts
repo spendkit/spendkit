@@ -6,6 +6,7 @@ import {
   type FieldKind, type ScannedField,
 } from "./formScan.js";
 import type { FormPlan, FormPlanner } from "./FormPlanner.js";
+import { guarded, openGuardedContext } from "./egressGuard.js";
 
 /**
  * Pays a checkout page we have no filler for. Two ways to understand the form, tried in order:
@@ -55,26 +56,31 @@ export class AdaptiveFiller implements CheckoutFiller {
   async fill(req: FillRequest): Promise<FillResult> {
     const own = !this.o.browser;
     const browser = this.o.browser ?? (await (await import("playwright-core")).chromium.launch({ headless: this.o.headless ?? true }));
-    const context = await browser.newContext({ locale: "en-US", serviceWorkers: "block", viewport: { width: 1000, height: 900 } });
+    // Behind the fence: no private network, redirects included, and no leaving the vetted hosts before paying.
+    const guard = await openGuardedContext(browser, { startUrl: req.url, ...(req.navHosts ? { navHosts: req.navHosts } : {}) }, { locale: "en-US", serviceWorkers: "block", viewport: { width: 1000, height: 900 } });
+    const context = guard.context;
     const startHost = safeHost(req.url) ?? "";
-    // The page runs in our server's browser: it may not reach this machine or a private network (only the start host,
-    // which SwapInteractor has already vetted, e.g. a local test shop).
+    // A first, cheap check on names (the guard's proxy is the real fence: it also sees redirect hops and resolved
+    // addresses). fallback(), not continue(), so the guard's own handler still runs.
     await context.route("**/*", (route) => {
       const h = safeHost(route.request().url());
-      return h && h !== startHost && isPrivateHost(h) ? route.abort("blockedbyclient") : route.continue();
+      return h && h !== startHost && isPrivateHost(h) ? route.abort("blockedbyclient") : route.fallback();
     });
     let submitted = false;
     try {
       const page = await context.newPage();
       if (req.watch) await startScreencast(page, req.watch);
-      const result = await this.run(page, req, () => (submitted = true));
+      const result = guarded(guard, await this.run(page, req, () => {
+        submitted = true;
+        guard.submitted();
+      }));
       req.watch?.step(outcomeLabel(result));
       if (req.watch) await page.waitForTimeout(1_500).catch(() => undefined);
       return result;
     } catch (e) {
-      return { outcome: "error", submitted, detail: cardFree(e, req) };
+      return { outcome: "error", submitted, detail: guard.violation ?? cardFree(e, req) };
     } finally {
-      await context.close().catch(() => undefined);
+      await guard.close();
       if (own) await browser.close().catch(() => undefined);
     }
   }

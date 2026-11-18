@@ -260,6 +260,23 @@ export class SwapInteractor {
     return { testCard, oneTime: !testCard };
   }
 
+  /**
+   * Where the checkout page may go before the pay button is pressed. A page on a vetted host may move between vetted
+   * hosts (buy.stripe.com hands over to checkout.stripe.com); a page on an open host (SWAP_OPEN_HOSTS) may not leave it.
+   * Anywhere else, and the filler stops before the card is typed.
+   */
+  private navHostsFor(raw: string): string[] {
+    const c = this.d.config;
+    let host: string;
+    try {
+      host = new URL(raw).host.toLowerCase();
+    } catch {
+      return [];
+    }
+    const vetted = [...c.allowedHosts, ...(c.insecureHosts ?? []), ...(c.stripeTestCard ? c.testHosts ?? [] : [])].map((h) => h.toLowerCase());
+    return vetted.includes(host) ? [...new Set(vetted)] : [host];
+  }
+
   private async drive(p: AgentPrincipal, row: CheckoutSwap): Promise<SwapView> {
     const swapId = row.swapId;
     const amountCents = row.amountCents;
@@ -301,7 +318,9 @@ export class SwapInteractor {
           step: (label: string) => live.publish(p.agentId, { type: "step", swapId, label }),
           frame: (jpeg: string) => live.publish(p.agentId, { type: "frame", swapId, jpeg }),
         };
-        fill = await this.d.filler.fill({ url: row.checkoutUrl, expectedAmountCents: amountCents, card, email: await this.receiptEmail(p), ...(watch ? { watch } : {}) });
+        fill = await this.d.filler.fill({
+          url: row.checkoutUrl, expectedAmountCents: amountCents, card, email: await this.receiptEmail(p), navHosts: this.navHostsFor(row.checkoutUrl), ...(watch ? { watch } : {}),
+        });
         live?.publish(p.agentId, { type: "end", swapId, outcome: fill.outcome });
       } catch (e) {
         // The filler reports its own errors; this is the vault or something unexpected, before any submit.

@@ -43,6 +43,11 @@ export interface FillRequest {
   /** Receipt email for pages that require one (Stripe Checkout does). */
   email: string;
   /**
+   * Hosts (URL.host) the top-level page may move to before the pay button is pressed, e.g. buy.stripe.com sending on to
+   * checkout.stripe.com. The start host always may. The swap sets this from its allowlist; omitted, only the start host.
+   */
+  navHosts?: string[];
+  /**
    * Live view of the attempt (steps and screen frames). Only ever set when the card is Stripe's public 4242 test card
    * (SWAP_STRIPE_TEST_CARD on a test-mode link): with a real card, nothing from the page may be captured.
    */

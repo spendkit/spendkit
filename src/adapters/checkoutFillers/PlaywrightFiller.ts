@@ -1,5 +1,6 @@
 import type { Browser, Frame, Page } from "playwright-core";
 import { parseUsdCents, type CheckoutFiller, type FillRequest, type FillResult, type FillWatcher } from "./CheckoutFiller.js";
+import { guarded, openGuardedContext } from "./egressGuard.js";
 
 /**
  * Fills a Stripe Checkout hosted page (checkout.stripe.com/c/pay/cs_...) in headless Chromium.
@@ -55,20 +56,25 @@ export class PlaywrightFiller implements CheckoutFiller {
     // Loaded on demand: playwright-core is optional, and only the swap needs it.
     const browser = this.o.browser ?? (await (await import("playwright-core")).chromium.launch({ headless: this.o.headless ?? true }));
     // A fresh context per attempt: no cookies, storage or autofill carried between payments.
-    const context = await browser.newContext({ locale: "en-US", serviceWorkers: "block" });
+    // Behind the fence: no private network, redirects included, and no leaving the vetted hosts before paying.
+    const guard = await openGuardedContext(browser, { startUrl: req.url, ...(req.navHosts ? { navHosts: req.navHosts } : {}) }, { locale: "en-US", serviceWorkers: "block" });
+    const context = guard.context;
     let submitted = false;
     try {
       const page = await context.newPage();
       if (req.watch) await startScreencast(page, req.watch);
-      const result = await this.run(page, req, () => (submitted = true));
+      const result = guarded(guard, await this.run(page, req, () => {
+        submitted = true;
+        guard.submitted();
+      }));
       req.watch?.step(outcomeLabel(result));
       // Hold the last frame on screen for a moment so a viewer sees the result page.
       if (req.watch) await page.waitForTimeout(1_500).catch(() => undefined);
       return result;
     } catch (e) {
-      return { outcome: "error", submitted, detail: cardFree(e, req) };
+      return { outcome: "error", submitted, detail: guard.violation ?? cardFree(e, req) };
     } finally {
-      await context.close().catch(() => undefined);
+      await guard.close();
       if (own) await browser.close().catch(() => undefined);
     }
   }

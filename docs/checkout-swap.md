@@ -20,6 +20,21 @@ agent ── pay_hosted_checkout(url, amount, merchant, key) ──► SwapInter
 
 Code: `src/lib/interactors/SwapInteractor.ts` (the use case) and `src/adapters/checkoutFillers/` (`PlaywrightFiller.ts`, `CheckoutFiller.ts` types and scrub, `fixtures/stripeFixture.ts` local Stripe-like page), migration `009_checkout_swap.sql`. The vault and card capture are Kai's: `src/adapters/cardVault/CardVault.ts`, `src/adapters/virtualCards/CardService.ts`.
 
+## The browser's fence
+
+The checkout URL comes from an agent, and the page runs in our server's browser, so every filler runs it behind
+`egressGuard.ts`, for the whole attempt, redirects included:
+
+- **No private network.** Every connection the page makes (navigations, each redirect hop, subresources, fetches,
+  frames, websockets) goes through a small proxy in the process. It resolves the name itself, refuses this machine,
+  private, link-local, CGNAT and metadata addresses and any port but 80 and 443, and connects to the address it
+  checked, so a DNS answer cannot change in between. The one exception is a start host that is itself private (a local
+  test shop listed in `SWAP_INSECURE_HOSTS` / `SWAP_TEST_HOSTS`), on its own port only.
+- **No leaving the vetted hosts before paying.** Until the pay button is pressed, the top-level page may only be on the
+  swap's vetted hosts (`SWAP_ALLOWED_HOSTS` and the test hosts; for an open host, that host alone). A page that sends the
+  browser elsewhere is stopped before the card is typed, and the swap ends `error` with nothing submitted. After the
+  pay button, the page may go to the merchant's success page wherever it is, still inside the fence.
+
 ## Statuses
 
 | status | meaning | money |

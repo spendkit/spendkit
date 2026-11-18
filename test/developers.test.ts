@@ -183,6 +183,10 @@ test("webhooks: signed, retried with backoff, and queued only for users who have
   assert.equal(body.externalId, "c1");
   assert.equal(body.data.amountCents, 2_000);
   assert.equal(c.headers["x-agentcards-event-id"], body.id);
+  // Dedupe keys on the signed body, not the header: the id is inside what the HMAC covers, and changing it breaks the signature.
+  assert.match(body.id, /^evt_/);
+  const forged = c.body.replace(body.id, "evt_forged000000");
+  assert.notEqual(DeveloperInteractor.sign(set.webhookSecret!, Number(m![1]), forged), c.headers["x-agentcards-signature"]);
 
   // 500 -> still pending with backoff; not retried before it is due.
   let ev = (await s.dev.listEvents(a.developerId, 10))[0]!;
@@ -197,6 +201,7 @@ test("webhooks: signed, retried with backoff, and queued only for users who have
   ev = (await s.dev.listEvents(a.developerId, 10))[0]!;
   assert.equal(ev.status, "delivered");
   assert.equal(calls[1]!.headers["x-agentcards-event-id"], calls[0]!.headers["x-agentcards-event-id"], "a retry is the same event");
+  assert.equal(calls[1]!.body, calls[0]!.body, "a retry carries the same signed body, so the same event.id");
   // Event listings never show payloads or secrets.
   assert.ok(!JSON.stringify(ev).includes("whsec_"));
   assert.ok(!("body" in ev));
