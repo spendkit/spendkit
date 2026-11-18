@@ -35,9 +35,11 @@ The checkout URL comes from an agent, and the page runs in our server's browser,
   browser elsewhere is stopped before the card is typed, and the swap ends `error` with nothing submitted. After the
   pay button, the page may go to the merchant's success page wherever it is, still inside the fence.
   Each filler also checks the page's address synchronously right before it types each card field
-  (`assertVetted`), so a navigation that lands a moment before the keystrokes cannot receive them.
+  (`assertVetted`), so a navigation that has landed is caught before the keystrokes. Playwright's copy of the URL can
+  trail a commit by a moment; one-time cards are the backstop for that window.
 - **No way around the proxy.** WebRTC (UDP, which an HTTP proxy never sees) is removed from every frame before page
-  scripts run, and a browser the fillers launch themselves also gets Chromium's flags to send no non-proxied UDP.
+  scripts run (that is the tested control). A browser the fillers launch themselves also gets Chromium's flags to send
+  no non-proxied UDP, as a second layer; no test proves those flags block a UDP send.
 - **The proxy is the context's alone.** Each context gets a random proxy username and password; anything else on the
   machine that finds the port gets `407`. Upstream connections time out after 10 s to connect and 60 s idle, at most
   64 are open at once, and hop-by-hop headers (and any the `Connection` header names) are not forwarded.
