@@ -1,7 +1,7 @@
 import type { Browser, Frame, Locator, Page } from "playwright-core";
 import { parseUsdCents, type CheckoutFiller, type FillRequest, type FillResult } from "./CheckoutFiller.js";
 import { THREE_DS_FRAME, captchaShown, cardFree, digits, hasFrame, isEditable, pad2, usd } from "./PlaywrightFiller.js";
-import { guarded, openGuardedContext } from "./egressGuard.js";
+import { guarded, launchCheckoutBrowser, openGuardedContext } from "./egressGuard.js";
 
 /**
  * Fills a Lemon Squeezy checkout (https://<store>.lemonsqueezy.com/checkout/buy/<uuid>, or /checkout/custom/<id>) in
@@ -48,7 +48,7 @@ export class LemonSqueezyFiller implements CheckoutFiller {
 
   async fill(req: FillRequest): Promise<FillResult> {
     const own = !this.o.browser;
-    const browser = this.o.browser ?? (await (await import("playwright-core")).chromium.launch({ headless: this.o.headless ?? true }));
+    const browser = this.o.browser ?? (await launchCheckoutBrowser(this.o.headless ?? true));
     // A fresh context per attempt: no cookies, storage or autofill carried between payments.
     // Behind the fence: no private network, redirects included, and no leaving the vetted hosts before paying.
     const guard = await openGuardedContext(browser, { startUrl: req.url, ...(req.navHosts ? { navHosts: req.navHosts } : {}) }, { locale: "en-US", serviceWorkers: "block" });
@@ -59,7 +59,7 @@ export class LemonSqueezyFiller implements CheckoutFiller {
       return guarded(guard, await this.run(page, req, () => {
         submitted = true;
         guard.submitted();
-      }));
+      }, () => guard.assertVetted(page)));
     } catch (e) {
       return { outcome: "error", submitted, detail: guard.violation ?? cardFree(e, req) };
     } finally {
@@ -68,7 +68,7 @@ export class LemonSqueezyFiller implements CheckoutFiller {
     }
   }
 
-  private async run(page: Page, req: FillRequest, markSubmitted: () => void): Promise<FillResult> {
+  private async run(page: Page, req: FillRequest, markSubmitted: () => void, vet: () => void): Promise<FillResult> {
     const loadMs = this.o.loadTimeoutMs ?? 30_000;
     const c = req.card;
 
@@ -109,7 +109,7 @@ export class LemonSqueezyFiller implements CheckoutFiller {
     if (settled.cents !== req.expectedAmountCents) return mismatch(settled.cents, req.expectedAmountCents);
 
     // The card goes in only now.
-    const missing = await this.typeCard(page, req);
+    const missing = await this.typeCard(page, req, vet);
     if (missing) return { outcome: "unsupported_page", submitted: false, pageAmountCents: settled.cents, detail: missing };
 
     const pay = page.locator(SEL.pay).first();
@@ -127,13 +127,14 @@ export class LemonSqueezyFiller implements CheckoutFiller {
   }
 
   /** Types the card into Stripe's iframes. Returns a reason when a field is missing, else undefined. */
-  private async typeCard(page: Page, req: FillRequest): Promise<string | undefined> {
+  private async typeCard(page: Page, req: FillRequest, vet: () => void): Promise<string | undefined> {
     const c = req.card;
     const type = async (sel: string, text: string) => {
       const frame = await cardFrame(page, sel, 5_000);
       if (!frame) return false;
       const input = frame.locator(sel).first();
       await input.click();
+      vet();
       await input.pressSequentially(text, { delay: 15 });
       return true;
     };

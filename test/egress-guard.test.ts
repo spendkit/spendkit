@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import http from "node:http";
 import net from "node:net";
 import type { AddressInfo } from "node:net";
-import { openGuardedContext, type GuardedContext } from "../src/adapters/checkoutFillers/egressGuard.js";
+import { CHECKOUT_BROWSER_ARGS, launchCheckoutBrowser, openGuardedContext, stripHopByHop, type GuardedContext } from "../src/adapters/checkoutFillers/egressGuard.js";
 
 // A checkout page (the vetted start host, a local test shop) tries every way it can think of to make the server's
 // browser reach an internal service. The internal service counts what reaches it: it must stay at zero.
@@ -52,6 +52,8 @@ before(async () => {
           go("/redirect-internal");
           setTimeout(() => (document.title = "done"), 1500);
         </script>`));
+      case "/rtc": return send(page(`<iframe srcdoc="<p>in</p>"></iframe>`));
+      case "/hop": return res.writeHead(200, { "content-type": "text/plain", connection: "x-private", "x-private": "1", "x-public": "1" }).end("hop");
       case "/leave": return send(page(`<script>location.href = "http://elsewhere.test/collect";</script>`));
       case "/leave-allowed": return send(page(`<script>location.href = "http://second.test/next";</script>`));
       default: return res.writeHead(404).end();
@@ -160,5 +162,121 @@ test("guard: a host on the swap's list may be navigated to (still fenced from th
     assert.ok(paid.g.refused.some((r) => r.startsWith("elsewhere.test:80 (private address)")), "but still not this machine");
   } finally {
     await paid.g.close();
+  }
+});
+
+test("guard: no WebRTC in the page or its frames, so nothing can go around the proxy over UDP", { skip }, async () => {
+  const { g, p } = await open("/rtc");
+  try {
+    await p.goto(`${SHOP}/rtc`);
+    const probe = () => {
+      const w = window as unknown as Record<string, unknown>;
+      let made = "no";
+      try {
+        new (w.RTCPeerConnection as new () => unknown)();
+        made = "yes";
+      } catch {}
+      return { rtc: typeof w.RTCPeerConnection, webkit: typeof w.webkitRTCPeerConnection, made };
+    };
+    assert.deepEqual(await p.evaluate(probe), { rtc: "undefined", webkit: "undefined", made: "no" });
+    const frame = p.frames().find((f) => f !== p.mainFrame());
+    assert.ok(frame, "the iframe loaded");
+    assert.deepEqual(await frame.evaluate(probe), { rtc: "undefined", webkit: "undefined", made: "no" });
+    // The page cannot put it back.
+    assert.equal(await p.evaluate(() => {
+      try {
+        (window as unknown as Record<string, unknown>).RTCPeerConnection = function () {};
+      } catch {}
+      return typeof (window as unknown as Record<string, unknown>).RTCPeerConnection;
+    }), "undefined");
+  } finally {
+    await g.close();
+  }
+});
+
+test("guard: a browser the fillers launch themselves carries the WebRTC flags and still works behind the fence", { skip }, async () => {
+  assert.ok(CHECKOUT_BROWSER_ARGS.includes("--force-webrtc-ip-handling-policy=disable_non_proxied_udp"));
+  const own = await launchCheckoutBrowser(true);
+  try {
+    const g = await openGuardedContext(own, { startUrl: `${SHOP}/rtc`, resolve });
+    try {
+      const p = await g.context.newPage();
+      await p.goto(`${SHOP}/rtc`);
+      assert.equal(await p.textContent("h1"), "shop");
+      assert.equal(await p.evaluate(() => typeof (window as unknown as Record<string, unknown>).RTCPeerConnection), "undefined");
+    } finally {
+      await g.close();
+    }
+  } finally {
+    await own.close();
+  }
+});
+
+test("guard: the proxy answers 407 to anyone without this context's credential, plain http and CONNECT alike", { skip }, async () => {
+  const before = internalHits.length;
+  const { g } = await open("/ok");
+  try {
+    const { hostname, port } = new URL(g.proxyUrl);
+    const raw = (head: string) => new Promise<string>((ok, fail) => {
+      const s = net.connect(Number(port), hostname, () => s.write(head));
+      let got = "";
+      s.on("data", (d) => (got += d));
+      s.on("end", () => ok(got));
+      s.on("close", () => ok(got));
+      s.on("error", fail);
+      s.setTimeout(5_000, () => s.destroy());
+    });
+    const plain = await raw(`GET ${SHOP}/ok HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n`);
+    assert.match(plain, /^HTTP\/1\.1 407/);
+    assert.match(plain, /proxy-authenticate: Basic/i);
+    const wrong = await raw(`CONNECT ${new URL(SHOP).host} HTTP/1.1\r\nProxy-Authorization: Basic ${Buffer.from("a:b").toString("base64")}\r\n\r\n`);
+    assert.match(wrong, /^HTTP\/1\.1 407/);
+    assert.match(wrong, /Proxy-Authenticate: Basic/);
+    // The browser itself got through (it answered the challenge): the earlier tests load pages over http and CONNECT.
+  } finally {
+    await g.close();
+  }
+  assert.deepEqual(internalHits.slice(before), []);
+});
+
+test("guard: assertVetted throws before a card is typed on a page off the vetted hosts, and not after submission", { skip }, async () => {
+  const { g, p } = await open("/ok");
+  try {
+    await p.goto(`${SHOP}/ok`);
+    g.assertVetted(p);
+    // A top-level page the route handler cannot see (no web host at all).
+    await p.goto("data:text/html,<input>").catch(() => undefined);
+    assert.throws(() => g.assertVetted(p), /before the card was submitted/);
+    assert.ok(g.violation);
+  } finally {
+    await g.close();
+  }
+  const paid = await open("/ok");
+  try {
+    await paid.p.goto(`${SHOP}/ok`);
+    paid.g.submitted();
+    await paid.p.goto("data:text/html,<p>thanks</p>").catch(() => undefined);
+    paid.g.assertVetted(paid.p);
+    assert.equal(paid.g.violation, undefined);
+  } finally {
+    await paid.g.close();
+  }
+});
+
+test("guard: hop-by-hop headers are not passed along, including those the Connection header names", { skip }, async () => {
+  assert.deepEqual(
+    stripHopByHop({ connection: "close, X-Secret", "keep-alive": "5", te: "trailers", "transfer-encoding": "chunked", upgrade: "h2c", trailer: "x", "proxy-authorization": "Basic x", "proxy-connection": "keep-alive", "x-secret": "1", accept: "*/*" }),
+    { accept: "*/*" },
+  );
+  const { g, p } = await open("/ok");
+  try {
+    await p.goto(`${SHOP}/ok`);
+    const h = await p.evaluate(async () => {
+      const r = await fetch("/hop");
+      return { priv: r.headers.get("x-private"), pub: r.headers.get("x-public"), body: await r.text() };
+    });
+    assert.deepEqual(h, { priv: null, pub: "1", body: "hop" });
+  } finally {
+    await g.close();
   }
 });

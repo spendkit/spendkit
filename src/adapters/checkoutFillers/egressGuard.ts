@@ -18,6 +18,7 @@
 import http from "node:http";
 import net from "node:net";
 import { lookup } from "node:dns/promises";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import type { Browser, BrowserContext, Page } from "playwright-core";
 import type { FillResult } from "./CheckoutFiller.js";
 import { isPrivateHost } from "./formScan.js";
@@ -40,13 +41,55 @@ export interface GuardedContext {
   submitted(): void;
   /** Why the guard stopped the page, if it did. Hosts only, card-free. */
   readonly violation: string | undefined;
+  /** The proxy's address (no credential), for tests. */
+  readonly proxyUrl: string;
   /** What the proxy refused, for tests and logs. "host:port (reason)". */
   readonly refused: readonly string[];
+  /**
+   * Call immediately before typing any card field. Throws (and stops the page) if, before submission, the top-level
+   * page is not on a vetted host. Synchronous, so nothing can run between the check and the keystrokes it guards
+   * being queued; framenavigated alone could land a beat late.
+   */
+  assertVetted(page: Page): void;
   /** Closes the context and the proxy. */
   close(): Promise<void>;
 }
 
+/**
+ * Chromium flags for a checkout browser. WebRTC's UDP does not go through an HTTP proxy, so it is turned off except
+ * through the proxy (which has no UDP), and local addresses are not handed to the page.
+ */
+export const CHECKOUT_BROWSER_ARGS: readonly string[] = [
+  "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+  "--disable-features=WebRtcHideLocalIpsWithMdns",
+];
+
+/** Launch the browser a filler uses when none is injected. */
+export async function launchCheckoutBrowser(headless = true): Promise<Browser> {
+  const { chromium } = await import("playwright-core");
+  return chromium.launch({ headless, args: [...CHECKOUT_BROWSER_ARGS] });
+}
+
+/** Runs in every frame before the page's own scripts: no WebRTC at all, whatever browser we were handed. */
+const NO_WEBRTC = `(() => {
+  for (const k of ["RTCPeerConnection", "webkitRTCPeerConnection", "RTCDataChannel", "RTCRtpSender", "RTCRtpReceiver", "RTCIceCandidate", "RTCSessionDescription"]) {
+    try { Object.defineProperty(globalThis, k, { value: undefined, writable: false, configurable: false }); } catch {}
+  }
+})();`;
+
 const WEB_PORTS = new Set([80, 443]);
+const CONNECT_TIMEOUT_MS = 10_000;
+const IDLE_TIMEOUT_MS = 60_000;
+const MAX_CONNECTIONS = 64;
+/** Never forwarded by a proxy (RFC 9110 7.6.1), plus our own credential. */
+const HOP_BY_HOP = ["connection", "keep-alive", "proxy-connection", "proxy-authorization", "proxy-authenticate", "te", "trailer", "transfer-encoding", "upgrade"];
+
+export function stripHopByHop<T extends Record<string, unknown>>(h: T): T {
+  const out: Record<string, unknown> = { ...h };
+  const listed = String(h["connection"] ?? "").split(",").map((x) => x.trim().toLowerCase()).filter(Boolean);
+  for (const k of [...HOP_BY_HOP, ...listed]) delete out[k];
+  return out as T;
+}
 const LOOPBACK = new Set(["localhost", "127.0.0.1", "::1"]);
 
 const hostOf = (raw: string): string | undefined => {
@@ -115,7 +158,19 @@ function makeCheck(opts: EgressGuardOptions) {
   };
 }
 
-async function startProxy(check: (host: string, port: number) => Promise<string>, refused: string[], log?: (m: string) => void) {
+async function startProxy(
+  check: (host: string, port: number) => Promise<string>,
+  refused: string[],
+  cred: { username: string; password: string },
+  log?: (m: string) => void,
+) {
+  // Only the browser this context runs knows the credential; anything else on this machine that finds the port gets 407.
+  const expected = Buffer.from(`Basic ${Buffer.from(`${cred.username}:${cred.password}`).toString("base64")}`);
+  const authed = (req: http.IncomingMessage) => {
+    const got = Buffer.from(String(req.headers["proxy-authorization"] ?? ""));
+    return got.length === expected.length && timingSafeEqual(got, expected);
+  };
+  const CHALLENGE = 'HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm="checkout"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n';
   const refuse = (what: string, why: string) => {
     refused.push(`${what} (${why})`);
     log?.(`checkout browser: refused ${what} (${why})`);
@@ -123,10 +178,28 @@ async function startProxy(check: (host: string, port: number) => Promise<string>
   const sockets = new Set<net.Socket>();
   const track = (s: net.Socket) => {
     sockets.add(s);
+    s.setTimeout(IDLE_TIMEOUT_MS, () => s.destroy());
     s.on("close", () => sockets.delete(s));
+  };
+  /** Outbound connections open now; past the cap a request is refused rather than queued. */
+  let open = 0;
+  const reserve = (): (() => void) | undefined => {
+    if (open >= MAX_CONNECTIONS) return undefined;
+    open++;
+    let done = false;
+    return () => {
+      if (!done) {
+        done = true;
+        open--;
+      }
+    };
   };
 
   const server = http.createServer(async (req, res) => {
+    if (!authed(req)) {
+      res.writeHead(407, { "proxy-authenticate": 'Basic realm="checkout"', connection: "close" }).end();
+      return;
+    }
     // Plain http, as an absolute URL.
     let u: URL;
     try {
@@ -149,20 +222,38 @@ async function startProxy(check: (host: string, port: number) => Promise<string>
       res.writeHead(403).end();
       return;
     }
-    const headers: http.OutgoingHttpHeaders = { ...req.headers, host: u.host };
-    delete headers["proxy-connection"];
-    delete headers["proxy-authorization"];
-    const up = http.request({ host: ip, port, method: req.method, path: `${u.pathname}${u.search}`, headers, setHost: false }, (r) => {
-      res.writeHead(r.statusCode ?? 502, r.headers);
+    const release = reserve();
+    if (!release) {
+      refuse(`${bare(u.hostname)}:${port}`, "too many connections");
+      res.writeHead(503).end();
+      return;
+    }
+    const headers: http.OutgoingHttpHeaders = { ...stripHopByHop(req.headers), host: u.host };
+    const up = http.request({ host: ip, port, method: req.method, path: `${u.pathname}${u.search}`, headers, setHost: false, agent: false }, (r) => {
+      res.writeHead(r.statusCode ?? 502, stripHopByHop(r.headers));
       r.pipe(res);
     });
-    up.on("error", () => res.destroy());
+    const connectTimer = setTimeout(() => up.destroy(new Error("connect timeout")), CONNECT_TIMEOUT_MS);
+    up.on("socket", (s) => {
+      s.once("connect", () => clearTimeout(connectTimer));
+      s.setTimeout(IDLE_TIMEOUT_MS, () => up.destroy(new Error("idle")));
+    });
+    up.on("close", () => {
+      clearTimeout(connectTimer);
+      release();
+    });
+    up.on("error", () => (res.headersSent ? res.destroy() : res.writeHead(502).end()));
+    res.on("close", () => up.destroy());
     req.pipe(up);
   });
 
   server.on("connect", async (req: http.IncomingMessage, sock: net.Socket, head: Buffer) => {
     track(sock);
     sock.on("error", () => undefined);
+    if (!authed(req)) {
+      sock.end(CHALLENGE);
+      return;
+    }
     const a = splitAuthority(req.url ?? "");
     if (!a) {
       sock.end("HTTP/1.1 400 Bad Request\r\n\r\n");
@@ -176,13 +267,26 @@ async function startProxy(check: (host: string, port: number) => Promise<string>
       sock.end("HTTP/1.1 403 Forbidden\r\n\r\n");
       return;
     }
-    const up = net.connect(a.port, ip, () => {
+    const release = reserve();
+    if (!release) {
+      refuse(`${a.host}:${a.port}`, "too many connections");
+      sock.end("HTTP/1.1 503 Service Unavailable\r\n\r\n");
+      return;
+    }
+    const up = net.connect({ port: a.port, host: ip, timeout: CONNECT_TIMEOUT_MS }, () => {
       sock.write("HTTP/1.1 200 Connection Established\r\n\r\n");
       if (head.length) up.write(head);
       up.pipe(sock);
       sock.pipe(up);
     });
-    track(up);
+    // Until connected, the timeout is the connect timeout; after, the idle one.
+    up.once("connect", () => up.setTimeout(IDLE_TIMEOUT_MS));
+    up.on("timeout", () => up.destroy());
+    sockets.add(up);
+    up.on("close", () => {
+      sockets.delete(up);
+      release();
+    });
     up.on("error", () => sock.destroy());
     sock.on("close", () => up.destroy());
   });
@@ -212,15 +316,19 @@ export async function openGuardedContext(
   contextOptions: Parameters<Browser["newContext"]>[0] = {},
 ): Promise<GuardedContext> {
   const refused: string[] = [];
-  const proxy = await startProxy(makeCheck(opts), refused, opts.log);
-  let context: BrowserContext;
+  const cred = { username: randomBytes(12).toString("hex"), password: randomBytes(24).toString("hex") };
+  const proxy = await startProxy(makeCheck(opts), refused, cred, opts.log);
+  let made: BrowserContext | undefined;
   try {
     // An empty bypass list, and Playwright adds <-loopback>, so localhost goes through the proxy too.
-    context = await browser.newContext({ ...contextOptions, proxy: { server: proxy.url, bypass: "" } });
+    made = await browser.newContext({ ...contextOptions, proxy: { server: proxy.url, bypass: "", ...cred } });
+    await made.addInitScript(NO_WEBRTC);
   } catch (e) {
+    await made?.close().catch(() => undefined);
     await proxy.close();
     throw e;
   }
+  const context = made;
   const startHost = hostOf(opts.startUrl);
   const allowed = new Set([...(opts.navHosts ?? []).map((h) => h.toLowerCase()), ...(startHost ? [startHost] : [])]);
   let armed = true;
@@ -265,7 +373,18 @@ export async function openGuardedContext(
     get violation() {
       return violation;
     },
+    assertVetted: (page: Page) => {
+      if (page.isClosed()) throw new Error(violation ?? "the checkout page was closed");
+      if (!armed) return;
+      const url = page.mainFrame().url();
+      const h = hostOf(url);
+      if (h === undefined || !allowed.has(h)) {
+        stop(page, h ?? "a non-web page");
+        throw new Error(violation);
+      }
+    },
     refused,
+    proxyUrl: proxy.url,
     close: async () => {
       await context.close().catch(() => undefined);
       await proxy.close();

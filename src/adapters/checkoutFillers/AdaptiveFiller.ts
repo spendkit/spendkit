@@ -6,7 +6,7 @@ import {
   type FieldKind, type ScannedField,
 } from "./formScan.js";
 import type { FormPlan, FormPlanner } from "./FormPlanner.js";
-import { guarded, openGuardedContext } from "./egressGuard.js";
+import { guarded, launchCheckoutBrowser, openGuardedContext } from "./egressGuard.js";
 
 /**
  * Pays a checkout page we have no filler for. Two ways to understand the form, tried in order:
@@ -55,7 +55,7 @@ export class AdaptiveFiller implements CheckoutFiller {
 
   async fill(req: FillRequest): Promise<FillResult> {
     const own = !this.o.browser;
-    const browser = this.o.browser ?? (await (await import("playwright-core")).chromium.launch({ headless: this.o.headless ?? true }));
+    const browser = this.o.browser ?? (await launchCheckoutBrowser(this.o.headless ?? true));
     // Behind the fence: no private network, redirects included, and no leaving the vetted hosts before paying.
     const guard = await openGuardedContext(browser, { startUrl: req.url, ...(req.navHosts ? { navHosts: req.navHosts } : {}) }, { locale: "en-US", serviceWorkers: "block", viewport: { width: 1000, height: 900 } });
     const context = guard.context;
@@ -73,7 +73,7 @@ export class AdaptiveFiller implements CheckoutFiller {
       const result = guarded(guard, await this.run(page, req, () => {
         submitted = true;
         guard.submitted();
-      }));
+      }, () => guard.assertVetted(page)));
       req.watch?.step(outcomeLabel(result));
       if (req.watch) await page.waitForTimeout(1_500).catch(() => undefined);
       return result;
@@ -85,7 +85,7 @@ export class AdaptiveFiller implements CheckoutFiller {
     }
   }
 
-  private async run(page: Page, req: FillRequest, markSubmitted: () => void): Promise<FillResult> {
+  private async run(page: Page, req: FillRequest, markSubmitted: () => void, vet: () => void): Promise<FillResult> {
     const loadMs = this.o.loadTimeoutMs ?? 30_000;
     const w = req.watch;
     const host = safeHost(req.url) ?? "?";
@@ -134,7 +134,7 @@ export class AdaptiveFiller implements CheckoutFiller {
       w?.step(plan.source === "labels" ? "Recognised the form from its field labels" : "The model mapped the form; checked it against the page");
 
       if (!plan.cardHere) {
-        const r = await this.fillAll(page, plan, req, false);
+        const r = await this.fillAll(page, plan, req, false, vet);
         if (r) return stop("unsupported_page", r, req.expectedAmountCents);
         w?.step("Continuing to the next step");
         await locate(plan.next!).click({ timeout: 10_000 });
@@ -150,7 +150,7 @@ export class AdaptiveFiller implements CheckoutFiller {
       if (!last.ok && last.shown !== undefined) return stop("amount_mismatch", `page total ${usd(last.shown)}, expected ${usd(req.expectedAmountCents)}`, last.shown);
       const startUrl = page.url();
       const before = await bodyText(page);
-      const r = await this.fillAll(page, plan, req, true);
+      const r = await this.fillAll(page, plan, req, true, vet);
       if (r) return stop("unsupported_page", r, req.expectedAmountCents);
       // From here on, never read the page's content into anything kept: only URL, frames and fixed wording.
       if (await captchaShown(page)) return stop("captcha", "bot check shown before submit", req.expectedAmountCents);
@@ -165,7 +165,7 @@ export class AdaptiveFiller implements CheckoutFiller {
   }
 
   /** Fills the plan's fields (card ones only when withCard), ticks its boxes. Returns a reason when it cannot. */
-  private async fillAll(page: Page, plan: Resolved, req: FillRequest, withCard: boolean): Promise<string | undefined> {
+  private async fillAll(page: Page, plan: Resolved, req: FillRequest, withCard: boolean, vet: () => void): Promise<string | undefined> {
     const w = req.watch;
     // Contact and address first, the card last, so the card is on the page for as short a time as possible.
     const ordered = [...plan.fills].sort((a, b) => Number(CARD_KINDS.has(a.kind)) - Number(CARD_KINDS.has(b.kind)));
@@ -180,6 +180,7 @@ export class AdaptiveFiller implements CheckoutFiller {
       if ("select" in v) {
         let picked = false;
         for (const want of v.select) {
+          vet();
           picked = await l.selectOption({ value: want }, { timeout: 3_000 }).then((x) => x.length > 0, () => false)
             || await l.selectOption({ label: want }, { timeout: 3_000 }).then((x) => x.length > 0, () => false);
           if (picked) break;
@@ -193,6 +194,7 @@ export class AdaptiveFiller implements CheckoutFiller {
       }
       await l.click({ timeout: 5_000 }).catch(() => undefined);
       await l.fill("", { timeout: 5_000 }).catch(() => undefined);
+      vet();
       await l.pressSequentially(v.type, { delay: w ? 55 : 10, timeout: 15_000 });
       if (w) await l.evaluate((el: HTMLElement) => { el.style.outline = ""; }).catch(() => undefined);
     }

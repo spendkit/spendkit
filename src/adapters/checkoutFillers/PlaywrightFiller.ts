@@ -1,6 +1,6 @@
 import type { Browser, Frame, Page } from "playwright-core";
 import { parseUsdCents, type CheckoutFiller, type FillRequest, type FillResult, type FillWatcher } from "./CheckoutFiller.js";
-import { guarded, openGuardedContext } from "./egressGuard.js";
+import { guarded, launchCheckoutBrowser, openGuardedContext } from "./egressGuard.js";
 
 /**
  * Fills a Stripe Checkout hosted page (checkout.stripe.com/c/pay/cs_...) in headless Chromium.
@@ -54,7 +54,7 @@ export class PlaywrightFiller implements CheckoutFiller {
   async fill(req: FillRequest): Promise<FillResult> {
     const own = !this.o.browser;
     // Loaded on demand: playwright-core is optional, and only the swap needs it.
-    const browser = this.o.browser ?? (await (await import("playwright-core")).chromium.launch({ headless: this.o.headless ?? true }));
+    const browser = this.o.browser ?? (await launchCheckoutBrowser(this.o.headless ?? true));
     // A fresh context per attempt: no cookies, storage or autofill carried between payments.
     // Behind the fence: no private network, redirects included, and no leaving the vetted hosts before paying.
     const guard = await openGuardedContext(browser, { startUrl: req.url, ...(req.navHosts ? { navHosts: req.navHosts } : {}) }, { locale: "en-US", serviceWorkers: "block" });
@@ -66,7 +66,7 @@ export class PlaywrightFiller implements CheckoutFiller {
       const result = guarded(guard, await this.run(page, req, () => {
         submitted = true;
         guard.submitted();
-      }));
+      }, () => guard.assertVetted(page)));
       req.watch?.step(outcomeLabel(result));
       // Hold the last frame on screen for a moment so a viewer sees the result page.
       if (req.watch) await page.waitForTimeout(1_500).catch(() => undefined);
@@ -79,7 +79,7 @@ export class PlaywrightFiller implements CheckoutFiller {
     }
   }
 
-  private async run(page: Page, req: FillRequest, markSubmitted: () => void): Promise<FillResult> {
+  private async run(page: Page, req: FillRequest, markSubmitted: () => void, vet: () => void): Promise<FillResult> {
     const loadMs = this.o.loadTimeoutMs ?? 30_000;
     const startHost = new URL(req.url).host;
     const total = page.locator(SEL.total).first();
@@ -89,10 +89,14 @@ export class PlaywrightFiller implements CheckoutFiller {
     const w = req.watch;
     /** Plain fill normally; with a viewer, highlight the field and type it key by key so it can be watched. */
     const put = async (l: ReturnType<Page["locator"]>, value: string, label: string, typed = value) => {
-      if (!w) return l.fill(value);
+      if (!w) {
+        vet();
+        return l.fill(value);
+      }
       w.step(label);
       await l.evaluate((el: HTMLElement) => { el.style.outline = "3px solid #635bff"; el.style.outlineOffset = "2px"; }).catch(() => undefined);
       await l.fill("");
+      vet();
       await l.pressSequentially(typed, { delay: 55 });
       await l.evaluate((el: HTMLElement) => { el.style.outline = ""; }).catch(() => undefined);
     };

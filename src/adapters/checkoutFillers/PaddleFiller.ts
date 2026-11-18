@@ -1,7 +1,7 @@
 import type { Browser, FrameLocator, Locator, Page } from "playwright-core";
 import { parseUsdCents, type CheckoutFiller, type FillRequest, type FillResult } from "./CheckoutFiller.js";
 import { THREE_DS_FRAME, captchaShown, cardFree, digits, hasFrame, isEditable, pad2, usd } from "./PlaywrightFiller.js";
-import { guarded, openGuardedContext } from "./egressGuard.js";
+import { guarded, launchCheckoutBrowser, openGuardedContext } from "./egressGuard.js";
 
 /**
  * Fills a Paddle Billing checkout in headless Chromium: a hosted checkout (https://pay.paddle.io/hsc_...), or a
@@ -56,7 +56,7 @@ export class PaddleFiller implements CheckoutFiller {
 
   async fill(req: FillRequest): Promise<FillResult> {
     const own = !this.o.browser;
-    const browser = this.o.browser ?? (await (await import("playwright-core")).chromium.launch({ headless: this.o.headless ?? true }));
+    const browser = this.o.browser ?? (await launchCheckoutBrowser(this.o.headless ?? true));
     // A fresh context per attempt: no cookies, storage or autofill carried between payments.
     // Behind the fence: no private network, redirects included, and no leaving the vetted hosts before paying.
     const guard = await openGuardedContext(browser, { startUrl: req.url, ...(req.navHosts ? { navHosts: req.navHosts } : {}) }, { locale: "en-US", serviceWorkers: "block" });
@@ -67,7 +67,7 @@ export class PaddleFiller implements CheckoutFiller {
       return guarded(guard, await this.run(page, req, () => {
         submitted = true;
         guard.submitted();
-      }));
+      }, () => guard.assertVetted(page)));
     } catch (e) {
       return { outcome: "error", submitted, detail: guard.violation ?? cardFree(e, req) };
     } finally {
@@ -76,7 +76,7 @@ export class PaddleFiller implements CheckoutFiller {
     }
   }
 
-  private async run(page: Page, req: FillRequest, markSubmitted: () => void): Promise<FillResult> {
+  private async run(page: Page, req: FillRequest, markSubmitted: () => void, vet: () => void): Promise<FillResult> {
     const loadMs = this.o.loadTimeoutMs ?? 30_000;
     const c = req.card;
     const addr = c.billingAddress;
@@ -135,7 +135,7 @@ export class PaddleFiller implements CheckoutFiller {
     if (settled.cents !== req.expectedAmountCents) return mismatch(settled.cents, req.expectedAmountCents);
 
     // The card goes in only now.
-    const typed = await typeCard(root, req);
+    const typed = await typeCard(root, req, vet);
     if (typed) return { outcome: "unsupported_page", submitted: false, pageAmountCents: settled.cents, detail: typed };
 
     const pay = root.getByRole("button", { name: /^(?:pay|subscribe|complete|buy)\b/i }).filter({ visible: true }).first();
@@ -192,12 +192,13 @@ async function findRoot(page: Page, waitMs: number): Promise<Root | undefined> {
   }
 }
 
-async function typeCard(root: Root, req: FillRequest): Promise<string | undefined> {
+async function typeCard(root: Root, req: FillRequest, vet: () => void): Promise<string | undefined> {
   const c = req.card;
   const type = async (sel: string, text: string) => {
     const input = root.locator(sel).first();
     if (!(await input.waitFor({ state: "visible", timeout: 5_000 }).then(() => true, () => false))) return false;
     await input.click();
+    vet();
     await input.pressSequentially(text, { delay: 15 });
     return true;
   };
