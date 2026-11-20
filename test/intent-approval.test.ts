@@ -489,6 +489,12 @@ test("HTTP: a developer key cannot loosen approval, directly or through a sessio
   const refused = await t.call("POST", limits, us, { approvalAboveCents: null });
   assert.equal(refused.status, 403);
   assert.match(refused.json.error, /passkey/);
+  // A passkey a developer session just enrolled cannot authorize a loosening for 24 hours (dk_ -> us_ -> enrol -> loosen).
+  const tooSoon = await t.call("POST", "/api/me/agents/a_1/approval-threshold/options", us, { approvalAboveCents: null });
+  assert.equal(tooSoon.status, 403);
+  assert.match(tooSoon.json.error, /24 hours/);
+  assert.equal(await t.threshold(cardId), "4000");
+  await t.pool.query(`UPDATE app_passkey SET created_at = now() - interval '25 hours' WHERE user_id = $1`, [uid]);
   const opts = await t.call("POST", "/api/me/agents/a_1/approval-threshold/options", us, { approvalAboveCents: null });
   assert.equal(opts.status, 200);
   assert.deepEqual([opts.json.statement.fromCents, opts.json.statement.toCents, opts.json.statement.agentId], [4000, null, "a_1"]);

@@ -81,6 +81,9 @@ const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "obj
  * (SpendIntents); the owner approves or denies it here with a WebAuthn passkey, before any card authorization can
  * match it. Every decision is stored with the signed assertion and the exact statement the owner saw.
  */
+const SESSION_PASSKEY_LOOSEN_DELAY_MS = 24 * 60 * 60 * 1000;
+const LOOSEN_DELAY_MESSAGE = "a passkey enrolled through a developer session can authorize raising or switching off approval only 24 hours after enrolment";
+
 export class ApprovalInteractor {
   private readonly now: () => Date;
   private readonly log: (msg: string) => void;
@@ -246,6 +249,15 @@ export class ApprovalInteractor {
 
   // ---------- loosening an agent's approval threshold ----------
 
+  /**
+   * A passkey enrolled through a developer session (registered_via='session') may not authorize a loosening until
+   * SESSION_PASSKEY_LOOSEN_DELAY_MS after enrolment, so a leaked developer key cannot enrol one and use it at once.
+   * Approving and denying intents is not delayed.
+   */
+  private canLoosen(k: { registeredVia: string; createdAt: Date }): boolean {
+    return k.registeredVia !== "session" || this.now().getTime() - k.createdAt.getTime() >= SESSION_PASSKEY_LOOSEN_DELAY_MS;
+  }
+
   private async loosening(userId: string, agentId: string, toIn: unknown): Promise<ApprovalLoosening> {
     const agent = await this.d.approvals.agentFor(userId, agentId);
     if (!agent) throw notFoundError("agent not found");
@@ -267,6 +279,7 @@ export class ApprovalInteractor {
     const change = await this.loosening(userId, agentId, approvalAboveCents);
     const keys = await this.d.approvals.passkeysOf(userId);
     if (!keys.length) throw conflictError("you have no passkey; loosen the threshold with your own owner token instead");
+    if (!keys.some((k) => this.canLoosen(k))) throw forbiddenError(LOOSEN_DELAY_MESSAGE);
     const statement = thresholdStatement(change, this.rpId);
     const raw = Buffer.concat([randomBytes(16), statementDigest(statement)]);
     const options = await generateAuthenticationOptions({
@@ -300,6 +313,7 @@ export class ApprovalInteractor {
     if (!isObject(credential)) {
       throw forbiddenError("raising or switching off approval needs your passkey: get options from POST /api/me/agents/:agentId/approval-threshold/options");
     }
+    if (!keys.some((k) => this.canLoosen(k))) throw forbiddenError(LOOSEN_DELAY_MESSAGE);
     const statement = thresholdStatement(change, this.rpId);
     const challenge = signedChallenge(credential);
     const c = await this.d.approvals.takeChallenge(challenge, userId, this.now());
@@ -308,6 +322,7 @@ export class ApprovalInteractor {
     }
     if (c.statement !== statement) throw conflictError("the threshold changed after these options were made; ask for new options");
     const { key, newCounter } = await this.verifyAssertion(userId, c.challenge, credential, `agent ${change.agentId} threshold`);
+    if (!this.canLoosen(key)) throw forbiddenError(LOOSEN_DELAY_MESSAGE);
     const r = await this.d.approvals.recordApprovalChange({
       ...change, userId, via: "passkey", now: this.now(),
       passkey: { credentialId: key.credentialId, newSignCount: newCounter, statement, challenge: c.challenge, assertion: credential },
