@@ -6,6 +6,7 @@ import { DeveloperInteractor } from "./lib/interactors/DeveloperInteractor.js";
 import { PayoutInteractor } from "./lib/interactors/PayoutInteractor.js";
 import { SwapInteractor } from "./lib/interactors/SwapInteractor.js";
 import type { Alerter } from "./lib/services/Alerter.js";
+import { SpendIntents } from "./lib/services/SpendIntents.js";
 import { SwapLiveFeed } from "./lib/services/SwapLiveFeed.js";
 
 /**
@@ -23,6 +24,10 @@ export interface AgentCardsApp {
   payouts?: PayoutInteractor;
   circleDeposits?: CircleDeposits;
   alerts?: Alerter;
+  /** Spend intents and the Miden authorization callback (docs/spend-intents.md). */
+  intents?: SpendIntents;
+  /** Set only when MIDEN_WEBHOOK_HASH is: the authorization callback route answers 404 without it. */
+  midenCallbackEnabled?: boolean;
   log?: (msg: string) => void;
 }
 
@@ -52,6 +57,15 @@ export function createApp(p: AppParams): AgentCardsApp & Required<Pick<AgentCard
   const swaps = p.swapConfig.enabled && p.vault
     ? new SwapInteractor({ swaps: p.repos.swaps, app: cardholders, vault: p.vault, filler: p.checkoutFiller, lifecycle: p.lifecycle, config: p.swapConfig, live, log: p.log })
     : undefined;
+  const log = p.log ?? (() => undefined);
+  const intents = p.repos.intents
+    ? new SpendIntents({
+      repo: p.repos.intents,
+      webhookHash: p.midenWebhookHash ?? "",
+      alerter: p.alerts ?? { raise: async (_k, msg) => log(`ALERT ${msg}`) },
+      log,
+    })
+    : undefined;
   const payouts = new PayoutInteractor({ db: p.db, payouts: p.repos.payouts, ledger: p.ledger, checkout: checkouts, rail: p.payoutRail, log: p.log });
-  return { cardholders, checkouts, swaps, swapLive: swaps ? live : undefined, developers, payouts, circleDeposits: p.circleDeposits, alerts: p.alerts, log: p.log };
+  return { cardholders, checkouts, swaps, swapLive: swaps ? live : undefined, developers, payouts, circleDeposits: p.circleDeposits, alerts: p.alerts, intents, midenCallbackEnabled: Boolean(intents && p.midenWebhookHash), log: p.log };
 }

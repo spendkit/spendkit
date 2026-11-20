@@ -3,7 +3,7 @@ import { badRequestError, payloadTooLargeError } from "../../errors.js";
 
 export const MAX_BODY_BYTES = 2_000_000;
 
-async function readBody(req: AppRequest): Promise<Buffer> {
+export async function readBody(req: AppRequest): Promise<Buffer> {
   let size = 0;
   const chunks: Buffer[] = [];
   for await (const c of req) {

@@ -88,6 +88,7 @@ export async function startBackgroundWorkers(
     for (const userId of await cardholders.pendingKycUsers()) await cardholders.refresh(userId).catch((e) => log(`kyc ${userId}: ${errText(e)}`));
     await cardholders.fundPending().catch((e) => log(`funding: ${errText(e)}`));
     await cardholders.reconcileSpends().catch((e) => log(`reconcile: ${errText(e)}`));
+    await app.intents?.sweepExpired().catch((e) => log(`intent expiry: ${errText(e)}`));
     // Not awaited: a slow webhook endpoint must not hold up reconcile and payouts (deliverDue is single-flight).
     if (app.developers) void app.developers.deliverDue().catch((e) => log(`webhooks: ${errText(e)}`));
     await app.swaps?.reconcile().catch((e) => log(`swap reconcile: ${errText(e)}`));

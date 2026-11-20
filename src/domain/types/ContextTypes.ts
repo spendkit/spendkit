@@ -65,6 +65,8 @@ export interface AppParams {
 
   // ----- checkouts, payouts, hosted-checkout swaps -----
   publicUrl: string;
+  /** MIDEN_WEBHOOK_HASH: signs Miden webhooks and the authorization callback. Without it the callback route is 404. */
+  midenWebhookHash?: string;
   payoutAddressDelayMs: number;
   isOwnAddress: (address: string) => Promise<boolean>;
   payoutRail: PayoutRail;

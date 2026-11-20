@@ -218,6 +218,47 @@ test("over budget: declines 911 and commits nothing", { skip }, async () => {
     await blocker.query("ROLLBACK");
     blocker.release();
   }
+  // The abandoned transaction rolls back on its own; give it a moment, then check it left nothing behind.
+  await new Promise((r) => setTimeout(r, 300));
   assert.equal(await bal(accounts.merchant()), 0);
+  assert.equal((await pool.query("SELECT count(*)::int AS n FROM miden_event WHERE decision <> 'pending'")).rows[0].n, 0);
   assert.equal(code(await call(intents, event({ transactionAmount: 10 }))), "000");
+});
+
+test("HTTP: the callback route strips the card number, answers 200/401, and is 404 without the hash", { skip }, async () => {
+  const { createAppServer } = await import("../src/createHttpServer.js");
+  const { intents } = await setup();
+  await intents.createIntent(A1, { amountCents: 1000, merchant: "Acme" });
+  const logs: string[] = [];
+  const serve = async (enabled: boolean) => {
+    const probe = createAppServer({ cardholders: {} as never, intents, midenCallbackEnabled: enabled, log: (m: string) => void logs.push(m) }, { allowedHosts: [] });
+    await new Promise<void>((r) => probe.listen(0, "127.0.0.1", r));
+    const port = (probe.address() as import("node:net").AddressInfo).port;
+    probe.close();
+    const real = createAppServer({ cardholders: {} as never, intents, midenCallbackEnabled: enabled, log: (m: string) => void logs.push(m) }, { allowedHosts: [`127.0.0.1:${port}`] });
+    await new Promise<void>((r) => real.listen(port, "127.0.0.1", r));
+    return { real, url: `http://127.0.0.1:${port}/webhooks/miden/authorization` };
+  };
+  const post = (url: string, body: unknown, headers: Record<string, string> = {}) =>
+    fetch(url, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: typeof body === "string" ? body : JSON.stringify(body) });
+
+  const off = await serve(false);
+  assert.equal((await post(off.url, {})).status, 404);
+  off.real.close();
+
+  const on = await serve(true);
+  try {
+    const pan = "4111111111111111";
+    const b = event({ transactionAmount: 10, accountNumber: pan });
+    const bad = await post(on.url, b, { signature: "nope" });
+    assert.equal(bad.status, 401);
+    const ok = await post(on.url, b, { signature: sign(b) });
+    assert.equal(ok.status, 200);
+    assert.deepEqual(await ok.json(), DECISIONS.approve);
+    const junk = await post(on.url, `{"accountNumber":"${pan}",`, {});
+    assert.deepEqual(await junk.json(), DECISIONS.invalidRequest);
+    assert.ok(!logs.some((l) => l.includes(pan)), "the card number never reaches a log line");
+  } finally {
+    on.real.close();
+  }
 });
