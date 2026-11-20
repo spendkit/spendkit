@@ -1,6 +1,17 @@
 # Spend intents and real-time authorization
 
-Status: design, 2026-11-20 (Obi). Nothing here is built yet.
+Status: built on branch `spend-intents`, 2026-11-20 (Obi), not merged. Code: `src/lib/services/SpendIntents.ts`, `src/db/repositories/createIntentRepository.ts`, route `POST /webhooks/miden/authorization` (404 without `MIDEN_WEBHOOK_HASH`), agent API `POST /agent/v1/intents` and `GET /agent/v1/intents/:spendId`. Tests: `test/spend-intents.test.ts`, `test/intent-repository.test.ts` (need `DATABASE_URL`).
+
+### Where the build differs from this design
+
+- **Unmatched settlement (force post):** alerts and moves no money. Posting at the owner level waits until Miden confirms how settlement is funded.
+- **An unreadable amount** declines with `111 INVALID_AMT` (from Miden's table), not `131`.
+- **A settlement, reversal or refund is linked to its authorization** by trying `cardTransactionAuthorizationId`, then `precedingRelatedToken`, then `reference`. Miden doesn't document which one it sends. **Ask Miden.**
+- **The same authorization asked again under a new `eventId`** (same `cardTransactionAuthorizationId`): approved again if the amount is the same, and no money moves.
+- **One-time cards** (hosted checkout): one authorization is approved up to the amount of the spend that `pay()` already debited.
+- **Daily limits** count an open intent at its `max_amount_cents` and an authorized intent at `captured_cents`.
+- **Not built yet:** an MCP tool for intents, and the provisional-approval sweeper that checks Miden after N days.
+
 
 ## Why
 
