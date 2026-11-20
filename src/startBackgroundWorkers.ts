@@ -83,6 +83,14 @@ export async function startBackgroundWorkers(
     await params.alerts.raise("stuck-funding", `${stuck.length} card top-up(s) stuck in 'reserved' for over ${Math.round(STUCK_FUNDING_MS / 60_000)} min (oldest ${oldest.fundingId}, card ${oldest.cardId}, ${oldest.amountCents} cents). See docs/runbook.md.`);
   }
 
+  // Unused WebAuthn challenges (approval screens opened and abandoned) are dropped once a minute.
+  let lastChallengePrune = 0;
+  async function pruneChallenges(): Promise<void> {
+    if (!app.approvals || Date.now() - lastChallengePrune < 60_000) return;
+    lastChallengePrune = Date.now();
+    await app.approvals.pruneChallenges();
+  }
+
   async function tick(): Promise<void> {
     const { cardholders } = app;
     for (const userId of await cardholders.pendingKycUsers()) await cardholders.refresh(userId).catch((e) => log(`kyc ${userId}: ${errText(e)}`));
@@ -97,6 +105,7 @@ export async function startBackgroundWorkers(
     await params.walletMonitor?.check().catch((e) => log(`wallet monitor: ${errText(e)}`));
     await app.checkouts?.sync().catch((e) => log(`checkouts: ${errText(e)}`));
     await app.payouts?.tick().catch((e) => log(`payouts: ${errText(e)}`));
+    await pruneChallenges().catch((e) => log(`webauthn challenge prune: ${errText(e)}`));
   }
   const timer = setInterval(() => void tick(), 5_000);
 

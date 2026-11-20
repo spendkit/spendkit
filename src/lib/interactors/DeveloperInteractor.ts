@@ -215,6 +215,7 @@ export class DeveloperInteractor {
   }
   async updateAgentLimits(developerId: string, userId: string, agentId: string, body: Parameters<CardholderInteractor["updateAgentLimits"]>[2]) {
     await this.owned(developerId, userId);
+    // A developer key may tighten approval but never raise it or switch it off: no authorizeLoosen, so that is refused.
     return this.d.app.updateAgentLimits(userId, agentId, body);
   }
   async fundAgent(developerId: string, userId: string, agentId: string, amountCents: unknown, key?: unknown) {

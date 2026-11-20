@@ -32,8 +32,11 @@ export const createAgentRepository = (db: Database): AgentRepository => ({
     await db.insert(appAgent).values(agent);
   },
 
-  async updateLimits(cardId, agentId, limits) {
-    await db.update(appAgent).set(limits).where(agentKey(cardId, agentId));
+  async updateLimits(cardId, agentId, limits, onlyIfApprovalAbove) {
+    const guard = onlyIfApprovalAbove === undefined ? undefined : sql`${appAgent.approvalAboveCents} IS NOT DISTINCT FROM ${onlyIfApprovalAbove}`;
+    const r = await db.update(appAgent).set(limits).where(guard ? and(agentKey(cardId, agentId), guard) : agentKey(cardId, agentId))
+      .returning({ id: appAgent.agentId });
+    return r.length > 0;
   },
 
   async revoke(cardId, agentId) {

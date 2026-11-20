@@ -58,10 +58,13 @@ export const appAgent = pgTable(
     allowedMccs: text("allowed_mccs").array(),
     revokedAt: timestamptz("revoked_at"),
     createdAt: timestamptz("created_at").notNull().defaultNow(),
+    /** Intents whose max amount is above this need the owner's passkey approval (migration 016). NULL = never. */
+    approvalAboveCents: bigintNumber("approval_above_cents"),
   },
   (t) => [
     primaryKey({ name: "app_agent_pkey", columns: [t.cardId, t.agentId] }),
     foreignKey({ name: "app_agent_card_id_fkey", columns: [t.cardId], foreignColumns: [appCard.cardId] }),
+    check("app_agent_approval_above_cents_check", sql`${t.approvalAboveCents} IS NULL OR ${t.approvalAboveCents} >= 0`),
   ],
 );
 

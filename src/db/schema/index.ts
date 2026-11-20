@@ -9,3 +9,4 @@ export * from "./developers.js";
 export * from "./checkout.js";
 export * from "./vault.js";
 export * from "./miden.js";
+export * from "./approvals.js";

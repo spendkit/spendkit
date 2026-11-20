@@ -37,3 +37,8 @@ export function requireCircleDeposits(app: AgentCardsApp): CircleDeposits {
   if (!app.circleDeposits) throw notFoundError("Circle deposits are not enabled on this server");
   return app.circleDeposits;
 }
+
+export function requireApprovals(app: AgentCardsApp): import("../interactors/ApprovalInteractor.js").ApprovalInteractor {
+  if (!app.approvals) throw notFoundError("intent approval is not enabled on this server");
+  return app.approvals;
+}

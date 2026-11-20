@@ -1,5 +1,7 @@
 import type { CircleDeposits } from "./adapters/deposits/CircleDeposits.js";
 import type { AppParams } from "./domain/types/ContextTypes.js";
+import { approvalRequired } from "./lib/services/approvalPolicy.js";
+import { ApprovalInteractor } from "./lib/interactors/ApprovalInteractor.js";
 import { CardholderInteractor } from "./lib/interactors/CardholderInteractor.js";
 import { CheckoutInteractor } from "./lib/interactors/CheckoutInteractor.js";
 import { DeveloperInteractor } from "./lib/interactors/DeveloperInteractor.js";
@@ -21,6 +23,8 @@ export interface AgentCardsApp {
   /** Live view of test-card swaps; only when SWAP_STRIPE_TEST_CARD=1 (sandbox). */
   swapLive?: SwapLiveFeed;
   developers?: DeveloperInteractor;
+  /** Owner passkeys and human approval of spend intents. */
+  approvals?: ApprovalInteractor;
   payouts?: PayoutInteractor;
   circleDeposits?: CircleDeposits;
   alerts?: Alerter;
@@ -58,14 +62,25 @@ export function createApp(p: AppParams): AgentCardsApp & Required<Pick<AgentCard
     ? new SwapInteractor({ swaps: p.repos.swaps, app: cardholders, vault: p.vault, filler: p.checkoutFiller, lifecycle: p.lifecycle, config: p.swapConfig, live, log: p.log })
     : undefined;
   const log = p.log ?? (() => undefined);
+  const approvals = new ApprovalInteractor({
+    approvals: p.repos.approvals, users: p.repos.users, publicUrl: p.publicUrl, log: p.log,
+    // Late-bound: the deny button releases the hold through SpendIntents, built just below.
+    intents: { releaseIntent: (spendId, reason) => intents ? intents.releaseIntent(spendId, reason) : Promise.reject(new Error("spend intents are not enabled on this server")) },
+  });
   const intents = p.repos.intents
     ? new SpendIntents({
       repo: p.repos.intents,
       webhookHash: p.midenWebhookHash ?? "",
       alerter: p.alerts ?? { raise: async (_k, msg) => log(`ALERT ${msg}`) },
       log,
+      // Fail closed: an agent we cannot read needs approval.
+      approvalRequired: async ({ cardId, agentId }, maxAmountCents) => {
+        const agent = await p.repos.agents.find(cardId, agentId);
+        return agent ? approvalRequired(agent, maxAmountCents) : true;
+      },
+      approvalUrl: (spendId) => approvals.approvalUrl(spendId),
     })
     : undefined;
   const payouts = new PayoutInteractor({ db: p.db, payouts: p.repos.payouts, ledger: p.ledger, checkout: checkouts, rail: p.payoutRail, log: p.log });
-  return { cardholders, checkouts, swaps, swapLive: swaps ? live : undefined, developers, payouts, circleDeposits: p.circleDeposits, alerts: p.alerts, intents, midenCallbackEnabled: Boolean(intents && p.midenWebhookHash), log: p.log };
+  return { cardholders, checkouts, swaps, swapLive: swaps ? live : undefined, developers, approvals, payouts, circleDeposits: p.circleDeposits, alerts: p.alerts, intents, midenCallbackEnabled: Boolean(intents && p.midenWebhookHash), log: p.log };
 }

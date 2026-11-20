@@ -29,6 +29,8 @@ import { createIntentRepository } from "./createIntentRepository.js";
 import type { IntentRepository } from "../../domain/repositories/IntentRepository.js";
 import { createSwapRepository } from "./createSwapRepository.js";
 import type { SwapRepository } from "../../domain/repositories/SwapRepository.js";
+import { createApprovalRepository } from "./createApprovalRepository.js";
+import type { ApprovalRepository } from "../../domain/repositories/ApprovalRepository.js";
 
 /**
  * Every repository, built on one database handle. Interactors receive only the
@@ -51,6 +53,7 @@ export interface Repositories {
   checkouts: CheckoutRepository;
   swaps: SwapRepository;
   intents: IntentRepository;
+  approvals: ApprovalRepository;
 }
 
 export function createRepositories(db: Database): Repositories {
@@ -70,5 +73,6 @@ export function createRepositories(db: Database): Repositories {
     checkouts: createCheckoutRepository(db),
     swaps: createSwapRepository(db),
     intents: createIntentRepository(db),
+    approvals: createApprovalRepository(db),
   };
 }

@@ -15,6 +15,12 @@ export const getPage = () =>
     sendFile(req, res, PAGES[key]!, true);
   });
 
+/** The owner's approval page for one spend intent; it loads the intent itself with the owner's token. */
+export const getApprovePage = () =>
+  createControllerMethod((req, res) => {
+    sendFile(req, res, "approve.html", true);
+  });
+
 export const getAsset = () =>
   createControllerMethod((req, res) => {
     const name = req.params.name!;

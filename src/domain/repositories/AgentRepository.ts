@@ -16,8 +16,17 @@ export interface AgentRepository {
     perTxnCents: number;
     dailyCents: number;
     allowedMccs: string[] | null;
+    approvalAboveCents?: number | null;
   }): Promise<void>;
-  updateLimits(cardId: string, agentId: string, limits: { perTxnCents: number; dailyCents: number; allowedMccs: string[] | null }): Promise<void>;
+  /**
+   * Sets the agent's limits. With `onlyIfApprovalAbove`, only while approval_above_cents still equals it (NULL-safe);
+   * false when it had changed and nothing was written.
+   */
+  updateLimits(
+    cardId: string, agentId: string,
+    limits: { perTxnCents: number; dailyCents: number; allowedMccs: string[] | null; approvalAboveCents?: number | null },
+    onlyIfApprovalAbove?: number | null,
+  ): Promise<boolean>;
   /** Sets revoked_at to now, keeping an earlier revocation time. */
   revoke(cardId: string, agentId: string): Promise<void>;
 }
