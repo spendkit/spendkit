@@ -63,7 +63,7 @@ export function createApp(p: AppParams): AgentCardsApp & Required<Pick<AgentCard
     : undefined;
   const log = p.log ?? (() => undefined);
   const approvals = new ApprovalInteractor({
-    approvals: p.repos.approvals, users: p.repos.users, publicUrl: p.publicUrl, log: p.log,
+    approvals: p.repos.approvals, users: p.repos.users, publicUrl: p.publicUrl, log: p.log, alerts: p.alerts,
     // Late-bound: the deny button releases the hold through SpendIntents, built just below.
     intents: { releaseIntent: (spendId, reason) => intents ? intents.releaseIntent(spendId, reason) : Promise.reject(new Error("spend intents are not enabled on this server")) },
   });

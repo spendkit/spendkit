@@ -23,6 +23,8 @@ export interface ApprovalContext {
   publicUrl: string;
   now?: () => Date;
   log?: (msg: string) => void;
+  /** Raises an alert when a passkey is enrolled through a developer session. Never throws. */
+  alerts?: Pick<import("../services/Alerter.js").Alerter, "raise">;
 }
 
 /** How the caller reached the owner API: the owner's own token (uk_) or a developer-issued session (us_). */
@@ -161,7 +163,11 @@ export class ApprovalInteractor {
       transports: info.credential.transports ?? null, deviceType: info.credentialDeviceType, backedUp: info.credentialBackedUp, registeredVia: via,
     });
     if (added === "exists") throw conflictError("a passkey is already registered");
-    // TODO(owner notice): email the owner here once the server can send email (Lin's review #3).
+    // No mailer yet (Lin's review #3): a developer-session enrolment raises an alert so the 24 h loosening delay can be caught.
+    if (via === "session") {
+      await this.d.alerts?.raise(`passkey-dev-enrol:${userId}:${info.credential.id}`,
+        `a passkey was added for user ${userId} through a developer session; it may not loosen approval for 24h`);
+    }
     this.log(`passkey registered for ${userId} via ${via}`);
     return this.passkeys(userId);
   }

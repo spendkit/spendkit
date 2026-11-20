@@ -149,7 +149,11 @@ async function setup() {
     },
   };
   let clock = new Date();
-  const approvals = new ApprovalInteractor({ approvals: repos.approvals, users: repos.users, intents, publicUrl: PUBLIC_URL, now: () => clock });
+  const alerts: string[] = [];
+  const approvals = new ApprovalInteractor({
+    approvals: repos.approvals, users: repos.users, intents, publicUrl: PUBLIC_URL, now: () => clock,
+    alerts: { raise: async (key: string) => { alerts.push(key); } },
+  });
 
   async function owner(n: string) {
     const userId = `u_${n}`, cardId = `c_${n}`;
@@ -175,7 +179,7 @@ async function setup() {
     return pk;
   }
   const row = async (spendId: string) => (await pool.query(`SELECT status, approval, reason FROM app_spend WHERE spend_id = $1`, [spendId])).rows[0];
-  return { pool, repos, approvals, released, owner, intent, enrol, row, advance: (ms: number) => { clock = new Date(clock.getTime() + ms); } };
+  return { pool, repos, approvals, released, alerts, owner, intent, enrol, row, advance: (ms: number) => { clock = new Date(clock.getTime() + ms); } };
 }
 
 async function rejects(p: Promise<unknown>, status: number, re?: RegExp) {
@@ -186,6 +190,17 @@ async function rejects(p: Promise<unknown>, status: number, re?: RegExp) {
     return true;
   });
 }
+
+test("an enrolment through a developer session raises an alert; the owner's own token does not", { skip }, async () => {
+  const t = await setup();
+  const a = await t.owner("al1"), b = await t.owner("al2");
+  await t.enrol(a.userId);
+  assert.deepEqual(t.alerts, []);
+  const pk = new SoftPasskey("app.spendkit.test", PUBLIC_URL);
+  await t.approvals.register(b.userId, "session", pk.register((await t.approvals.registrationOptions(b.userId)).challenge));
+  assert.equal(t.alerts.length, 1);
+  assert.match(t.alerts[0]!, new RegExp(`^passkey-dev-enrol:${b.userId}:`));
+});
 
 test("first-use passkey enrolment, and a second enrolment is refused", { skip }, async () => {
   const t = await setup();
