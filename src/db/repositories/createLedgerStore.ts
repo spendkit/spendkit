@@ -8,7 +8,7 @@ import {
   type NewStoredTransaction,
   type StoreTx,
 } from "../../domain/repositories/LedgerStore.js";
-import { PgCode, pgError, type Database, type Executor } from "../client.js";
+import { PgCode, pgError, type Database, type Executor, type Transaction } from "../client.js";
 import { ledgerBalance, ledgerPosting, ledgerTx } from "../schema/index.js";
 import { toSafeInt } from "../schema/columns.js";
 
@@ -91,11 +91,12 @@ function txView(tx: Executor): StoreTx {
 }
 
 /**
- * Postgres ledger store. Each transaction runs at READ COMMITTED but takes row locks on the balance rows of every
+ * Postgres ledger store. Given an open transaction instead of the database, each ledger transaction runs as a savepoint
+ * inside it, so ledger postings commit or roll back with the caller's other writes (SpendIntents does this). Each transaction runs at READ COMMITTED but takes row locks on the balance rows of every
  * account it touches before reading them, so concurrent reserves/spends on one account queue up and the second sees
  * the first one's committed balance. The CHECK on ledger_balance backstops it.
  */
-export const createLedgerStore = (db: Database): LedgerRepository => ({
+export const createLedgerStore = (db: Database | Transaction): LedgerRepository => ({
   async transaction(fn) {
     try {
       return await db.transaction((tx) => fn(txView(tx)));

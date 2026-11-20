@@ -113,7 +113,8 @@ export const createSpendRepository = (db: Database): SpendRepository => ({
     return db
       .select()
       .from(appSpend)
-      .where(and(eq(appSpend.status, "processing"), lt(appSpend.createdAt, before), not(sql`starts_with(${appSpend.idempotencyKey}, ${excludeKeyPrefix})`)))
+      // Spend intents (expires_at set) are not card payments in flight: SpendIntents settles and expires them.
+      .where(and(eq(appSpend.status, "processing"), isNull(appSpend.expiresAt), lt(appSpend.createdAt, before), not(sql`starts_with(${appSpend.idempotencyKey}, ${excludeKeyPrefix})`)))
       .orderBy(asc(appSpend.createdAt))
       .limit(limit);
   },

@@ -47,7 +47,7 @@ export interface SpendRepository {
   /** Records the ledger debit on a processing spend. False if it is no longer processing. */
   setLedgerSeqIfProcessing(spendId: string, seq: number): Promise<boolean>;
   setChargeCard(spendId: string, chargeCardId: string): Promise<void>;
-  /** Processing spends created before `before`, excluding keys starting with `excludeKeyPrefix`, oldest first. */
+  /** Processing spends created before `before`, excluding keys starting with `excludeKeyPrefix` and spend intents, oldest first. */
   processingBefore(before: Date, excludeKeyPrefix: string, limit: number): Promise<Spend[]>;
   /** Moves a processing spend to `status` (auth fills in when given). True if this call moved it. */
   settleProcessing(spendId: string, status: SpendStatus, reason: string | null, auth?: string): Promise<boolean>;

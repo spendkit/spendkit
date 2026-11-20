@@ -79,7 +79,8 @@ export interface SpendView {
   amountCents: number;
   merchant: string;
   mcc: string | null;
-  status: "processing" | "approved" | "declined" | "voided";
+  /** "expired": a spend intent that no authorization used (lib/services/SpendIntents.ts). */
+  status: "processing" | "approved" | "declined" | "voided" | "expired";
   reason: string | null;
   createdAt: string;
 }
@@ -100,6 +101,8 @@ const RESEND_WINDOW_MS = 20 * 3_600_000;
 export const INTERNAL_KEY_PREFIX = "checkout:";
 /** Spend keys of checkout-swap payments (src/checkout-swap): charged by filling a hosted checkout, reconciled by SwapInteractor. */
 export const SWAP_KEY_PREFIX = "checkout:swap:";
+/** app_spend.idempotency_key prefix of spend intents (lib/services/SpendIntents.ts). */
+export const INTENT_KEY_PREFIX = "intent:";
 
 /**
  * How an internal caller charges the card instead of Miden's simulated authorization. Called once, after the
@@ -736,6 +739,8 @@ export class CardholderInteractor {
     const key = req.idempotencyKey === undefined || req.idempotencyKey === "" ? newId("auto", 12) : requireText(req.idempotencyKey, "idempotencyKey", 100);
     // Checkout keys are ours (CheckoutInteractor): an agent pre-spending under one could pass it off as the checkout's payment.
     if (key.startsWith(INTERNAL_KEY_PREFIX) && !opts.internal) throw badRequestError(`idempotencyKey must not start with "${INTERNAL_KEY_PREFIX}"`);
+    // Spend intents keep their keys under their own prefix (SpendIntents), so a payment can never answer as an intent.
+    if (key.startsWith(INTENT_KEY_PREFIX)) throw badRequestError(`idempotencyKey must not start with "${INTENT_KEY_PREFIX}"`);
     // A swap charge must live under a swap key, so the right reconcile owns it; and a swap key always has one.
     if (Boolean(opts.charge) !== key.startsWith(SWAP_KEY_PREFIX)) throw badRequestError("a custom charge needs a swap key, and a swap key needs a custom charge");
     const lockKey = `${p.cardId}:${p.agentId}:${key}`;

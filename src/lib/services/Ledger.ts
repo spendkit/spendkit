@@ -46,6 +46,8 @@ export const accounts = {
   fees: () => "fees:fees",
   /** The card network: where card spends go, and where checkout charges come back from to us as merchant of record. */
   merchant: () => "external:merchant",
+  /** Money held for open spend intents on the card (docs/spend-intents.md). Never negative. */
+  hold: (cardId: string) => `hold:${cardId}`,
   /** What we owe a checkout merchant. Never negative. */
   merchantBalance: (merchantId: string) => `merchant:${merchantId}`,
   /** A merchant's payouts reserved but not yet confirmed sent. */
@@ -59,7 +61,7 @@ export class LedgerError extends Error {}
 /** Kinds only the typed helpers may write; raw post() rejects them. */
 const RESERVED_KINDS = new Set(["deposit", "spend", "reversal"]);
 const isReservedKind = (k: string) =>
-  RESERVED_KINDS.has(k) || k.startsWith("funding") || k.startsWith("agent_") || k.startsWith("checkout_") || k.startsWith("payout");
+  RESERVED_KINDS.has(k) || k.startsWith("funding") || k.startsWith("agent_") || k.startsWith("intent_") || k.startsWith("checkout_") || k.startsWith("payout");
 
 export interface LedgerOptions {
   /** Stablecoins that may be credited by confirmDeposit. Default USDC and USDT. */
@@ -235,6 +237,93 @@ export class Ledger {
     }, {});
   }
 
+  // ---------- spend intents (lib/services/SpendIntents.ts). Every step is keyed by the spend id (or Miden event id),
+  // so a replay writes nothing twice; the hold account can never go negative, so nothing is released twice.
+
+  /** Opening an intent: the agent's sub-balance -> hold:<card>, for the intent's maximum. Fails if the agent is short. */
+  async holdIntent(args: { cardId: string; agentId: string; spendId: string; amountCents: number }): Promise<LedgerTransaction> {
+    requirePositive(args.amountCents, "amountCents");
+    requireAgentId(args.agentId);
+    requireText(args.spendId, "spendId");
+    return this.run({
+      idempotencyKey: `intent-hold:${args.spendId}`,
+      kind: "intent_hold",
+      reference: args.spendId,
+      postings: [
+        { account: accounts.agent(args.cardId, args.agentId), amountCents: -args.amountCents },
+        { account: accounts.hold(args.cardId), amountCents: args.amountCents },
+      ],
+    }, {});
+  }
+
+  /** An intent that no authorization used (expired, owner denied): the whole hold goes back to the agent. */
+  async releaseIntentHold(args: { cardId: string; agentId: string; spendId: string; amountCents: number }): Promise<LedgerTransaction> {
+    requirePositive(args.amountCents, "amountCents");
+    requireAgentId(args.agentId);
+    requireText(args.spendId, "spendId");
+    return this.run({
+      idempotencyKey: `intent-release:${args.spendId}`,
+      kind: "intent_release",
+      reference: args.spendId,
+      postings: [
+        { account: accounts.hold(args.cardId), amountCents: -args.amountCents },
+        { account: accounts.agent(args.cardId, args.agentId), amountCents: args.amountCents },
+      ],
+    }, {});
+  }
+
+  /** An authorization we approved against the intent: the authorized amount leaves the hold toward the merchant. */
+  async captureIntent(args: { cardId: string; spendId: string; amountCents: number; authRef: string }): Promise<LedgerTransaction> {
+    requirePositive(args.amountCents, "amountCents");
+    requireText(args.spendId, "spendId");
+    requireText(args.authRef, "authRef");
+    return this.run({
+      idempotencyKey: `intent-capture:${args.spendId}`,
+      kind: "intent_capture",
+      reference: args.authRef,
+      postings: [
+        { account: accounts.hold(args.cardId), amountCents: -args.amountCents },
+        { account: accounts.merchant(), amountCents: args.amountCents },
+      ],
+    }, {});
+  }
+
+  /**
+   * Settlement of an approved intent. `holdRemainderCents` (what the capture left on hold) leaves the hold;
+   * `merchantDeltaCents` (settled minus captured: positive for a tip or FX up, negative for less) goes to the merchant;
+   * the agent gets the difference, or pays it when the settlement is above the hold (fails if the agent is short).
+   * Returns undefined when there is nothing to move.
+   */
+  async settleIntent(args: { cardId: string; agentId: string; spendId: string; holdRemainderCents: number; merchantDeltaCents: number }): Promise<LedgerTransaction | undefined> {
+    requireAgentId(args.agentId);
+    requireText(args.spendId, "spendId");
+    if (!Number.isSafeInteger(args.holdRemainderCents) || args.holdRemainderCents < 0) throw new LedgerError("holdRemainderCents must be an integer >= 0");
+    if (!Number.isSafeInteger(args.merchantDeltaCents)) throw new LedgerError("merchantDeltaCents must be an integer");
+    const postings: Posting[] = [
+      { account: accounts.hold(args.cardId), amountCents: -args.holdRemainderCents },
+      { account: accounts.merchant(), amountCents: args.merchantDeltaCents },
+      { account: accounts.agent(args.cardId, args.agentId), amountCents: args.holdRemainderCents - args.merchantDeltaCents },
+    ].filter((p) => p.amountCents !== 0);
+    if (postings.length === 0) return undefined;
+    return this.run({ idempotencyKey: `intent-settle:${args.spendId}`, kind: "intent_settle", reference: args.spendId, postings }, {});
+  }
+
+  /** A reversal or refund of an intent's payment: money comes back from the merchant to the agent. One per Miden event. */
+  async returnIntentPayment(args: { cardId: string; agentId: string; spendId: string; eventId: string; amountCents: number; kind: "intent_reversal" | "intent_refund" }): Promise<LedgerTransaction> {
+    requirePositive(args.amountCents, "amountCents");
+    requireAgentId(args.agentId);
+    requireText(args.eventId, "eventId");
+    return this.run({
+      idempotencyKey: `intent-return:${args.eventId}`,
+      kind: args.kind,
+      reference: args.spendId,
+      postings: [
+        { account: accounts.merchant(), amountCents: -args.amountCents },
+        { account: accounts.agent(args.cardId, args.agentId), amountCents: args.amountCents },
+      ],
+    }, {});
+  }
+
   /**
    * A paid checkout's charge comes back from the card network to the merchant's balance. One key per
    * checkout, so a replay or a second (late) approval can never credit the merchant twice.
@@ -333,6 +422,8 @@ export class Ledger {
     // Checkout settles and refunds are keyed once per checkout (and settled_seq marks them done); a reversal would
     // double-credit a refunded merchant or silently drop a sale that sync never re-credits.
     if (original.kind.startsWith("checkout_")) throw new LedgerError("checkout transactions cannot be reversed");
+    // Intent moves are undone by their own keyed steps (release, settle, return); a reversal would double-count one.
+    if (original.kind.startsWith("intent_")) throw new LedgerError("spend intent transactions cannot be reversed");
     return this.run({
       idempotencyKey: `reversal:${original.seq}`,
       kind: "reversal",
