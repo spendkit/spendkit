@@ -17,7 +17,7 @@ Source: `https://docs.miden.co/cards/customer-managed-authorizations/authorizati
 - **Deadline:** respond within **400 ms**. Otherwise Miden applies our configured *Default Authorization Decision*. That default must be **decline**.
 - **Response:** HTTP 200 with `{ responseCode, responseReasonCode, responseMessage }`.
   - `000/APPROVE` approves. Any supported non-000 code declines.
-  - Codes we use: `116 INSUFF_FUNDS`, `119 TXN_NOT_PERMIT`, `125 BLK_MRCH`, `127 RESTRICT_MCC`, `129 LIMIT_EXCEED`, `130 VELOCITY_EXCEED`, `143 CRD_CLOSED`, `911 ERROR`.
+  - Codes we use: `116 INSUFF_FUNDS`, `119 TXN_NOT_PERMIT`, `125 BLK_MRCH`, `127 RESTRICT_MCC`, `129 LIMIT_EXCEED`, `130 VELOCITY_EXCEED`, `131 INVALID_REQ` (unknown requestType), `137 SEC_ERROR` (stale or future eventTime), `143 CRD_CLOSED`, `911 ERROR`. Every code here appears in Miden's "Supported Authorization Decision Codes" table (checked 2026-11-20). Return the code, reason and message exactly as that table lists them, and never invent one.
 - **Fields we use:**
   - Identity and money: `requestType` (`Authorization`, `Settlement`, others unknown), `cardId`, `transactionAmount` (always USD), `authorizationAmount` + `transactionCurrencyCode`, `charge` + `chargeType`.
   - Merchant: `merchantCategoryCode`, `merchantName`, `merchantCountry`, `merchantAcceptorId`.
