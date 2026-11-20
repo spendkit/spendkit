@@ -91,3 +91,14 @@ Miden caps a customer at **3 cards, one-time cards included** (architecture.md, 
 3. Can the 3-card-per-customer cap be raised?
 4. Can our BINs be enrolled for Visa Intelligent Commerce / network tokens (VTS)?
 5. Can the default decision be set to decline, and what is the real latency budget in production?
+
+## Interface agreed with Mira (approval), 2026-11-20
+
+`SpendIntents` (`src/lib/services/SpendIntents.ts`, wired as `app.intents`):
+
+- `createIntent(input)`. Sets `approval='pending'` when `approvalRequired(agent, maxAmountCents)` is true. That helper belongs to Mira and compares against **max_amount_cents**, not `amount_cents`, so the tolerance cannot get around approval. A pending intent returns `{ status: 'pending_approval', spendId, expiresAt, approvalUrl }`, where `approvalUrl` comes from `app.approvals.approvalUrl(spendId)`.
+- `getIntent(cardId, agentId, spendId)`. The result includes `approval`, so an agent can poll it.
+- `releaseIntent(spendId, 'owner_denied' | 'expired')`. Runs in one transaction with `FOR UPDATE`. It acts only when `status='processing'` and `auth_ref IS NULL`, reverses the hold, and sets the status to `declined` (reason `owner_denied`) or `expired`. It is idempotent and returns `{ released, status }`. The expiry sweeper uses the same function.
+- `context` is capped at 500 characters, control characters are stripped, and an empty value is rejected. It is shown as plain text only.
+- v1 intents are single-use only (`uses_allowed = 1`).
+- Migrations: 014 is spend intents (Obi), 015 is Val's work, and 016 is Mira's approval work (`app_agent.approval_above_cents`, `app_passkey`, `app_spend_approval`). Mira only changes `approval` from `pending` to `approved`. Approval evidence lives in her table.
