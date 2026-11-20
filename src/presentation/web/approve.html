@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="robots" content="noindex">
+<meta name="referrer" content="no-referrer">
+<title>Approve a payment · Spendkit</title>
+<link rel="stylesheet" href="/assets/site.css">
+<style>
+  .approve{max-width:520px;margin:40px auto 64px;display:grid;gap:18px}
+  .approve h1{font-size:clamp(26px,4vw,34px)}
+  .amount{font:700 44px var(--display);letter-spacing:-.03em;font-variant-numeric:tabular-nums;margin:6px 0 2px}
+  .amount small{display:block;font:500 14px var(--body, inherit);letter-spacing:0;color:var(--muted);margin-top:4px}
+  .kv{display:grid;grid-template-columns:auto 1fr;gap:10px 18px;font-size:15px;margin:16px 0 0}
+  .kv dt{color:var(--muted)} .kv dd{margin:0;min-width:0;overflow-wrap:anywhere}
+  .ctx{white-space:pre-wrap;overflow-wrap:anywhere;background:var(--bg2);border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-top:6px;font-size:15px;line-height:1.5}
+  .ctx-label{display:flex;justify-content:space-between;gap:8px;color:var(--muted);font-size:13px;margin-top:18px}
+  .actions{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .actions button{padding:13px 16px;font-size:15px}
+  button.deny{color:var(--bad);border-color:var(--bad)}
+  .note{font-size:13px;color:var(--muted);line-height:1.5}
+  .state{padding:18px;border-radius:var(--r);border:1px solid var(--line);background:var(--surface)}
+  .state.ok{border-color:var(--ok);background:var(--ok-soft)} .state.bad{border-color:var(--bad);background:var(--bad-soft)}
+  [hidden]{display:none!important}
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="nav"><div class="wrap">
+  <a class="brand" href="/app"><span class="logo" aria-hidden="true"></span>Spendkit</a>
+  <span class="spacer"></span>
+  <button class="icon-btn" data-theme-toggle type="button"></button>
+</div></header>
+<main class="wrap" id="main">
+  <div class="approve" id="view" aria-live="polite"><noscript><p>This page needs JavaScript.</p></noscript><p class="muted">Loading…</p></div>
+</main>
+<div id="msg" role="status" aria-live="polite"></div>
+<script src="/assets/site.js"></script>
+<script src="/assets/approve.js"></script>
+</body>
+</html>

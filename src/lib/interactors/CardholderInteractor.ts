@@ -127,6 +127,25 @@ function requireCents(v: unknown, what: string): number {
   return v;
 }
 
+/**
+ * `approvalAboveCents`: undefined keeps the current value, null turns approval off, and a whole number of cents >= 0
+ * makes every intent above it wait for the owner's passkey (0: every intent).
+ */
+function parseApprovalAbove(v: unknown): number | null | undefined {
+  if (v === undefined || v === null) return v;
+  if (typeof v !== "number" || !Number.isSafeInteger(v) || v < 0) throw badRequestError("approvalAboveCents must be null or a whole number of cents, 0 or more");
+  return v;
+}
+
+/** A raise or switch-off of an agent's approval threshold, for the caller to authorize. */
+export interface ApprovalLoosening { cardId: string; agentId: string; agentName: string; fromCents: number; toCents: number | null }
+
+/** True when `next` lets more through without approval than `prev` (raised, or switched off). */
+export function loosensApproval(prev: number | null, next: number | null): boolean {
+  if (prev === null) return false;
+  return next === null || next > prev;
+}
+
 function requireText(v: unknown, what: string, max = 200): string {
   if (typeof v !== "string" || !v.trim()) throw badRequestError(`${what} is required`);
   if (v.length > max) throw badRequestError(`${what} is too long`);
@@ -539,7 +558,7 @@ export class CardholderInteractor {
 
   // ---------- agents (owner side) ----------
 
-  async createAgent(userId: string, body: { name?: unknown; perTransactionCents?: unknown; dailyCents?: unknown; allowedMccs?: unknown }) {
+  async createAgent(userId: string, body: { name?: unknown; perTransactionCents?: unknown; dailyCents?: unknown; allowedMccs?: unknown; approvalAboveCents?: unknown }) {
     const card = await this.requireCard(userId);
     const name = requireText(body.name, "name", 80);
     const requested: SpendPolicy = {
@@ -548,6 +567,7 @@ export class CardholderInteractor {
     };
     const mccs = parseMccs(body.allowedMccs);
     if (mccs) requested.allowedMccs = mccs;
+    const approvalAboveCents = parseApprovalAbove(body.approvalAboveCents) ?? null;
     checkAgentLimits(requested, card);
     // An agent never gets more room than its owner's card.
     const policy = capPolicy({ perTransactionCents: card.perTxnCents, dailyCents: card.dailyCents, lifetimeFundedCents: 0 }, requested);
@@ -555,10 +575,10 @@ export class CardholderInteractor {
     const token = newToken("ak");
     await this.d.agents.create({
       cardId: card.cardId, agentId, name, tokenHash: hashToken(token),
-      perTxnCents: policy.perTransactionCents, dailyCents: policy.dailyCents, allowedMccs: policy.allowedMccs ?? null,
+      perTxnCents: policy.perTransactionCents, dailyCents: policy.dailyCents, allowedMccs: policy.allowedMccs ?? null, approvalAboveCents,
     });
     this.d.wallets.create(card.cardId, agentId, policy);
-    return { agentId, name, policy, token };
+    return { agentId, name, policy, approvalAboveCents, token };
   }
 
   async fundAgent(userId: string, agentId: string, amountCentsIn: unknown, key?: unknown): Promise<void> {
@@ -599,9 +619,25 @@ export class CardholderInteractor {
     await this.reclaimAgent(userId, agentId);
   }
 
-  async updateAgentLimits(userId: string, agentId: string, body: { perTransactionCents?: unknown; dailyCents?: unknown; allowedMccs?: unknown }) {
+  /**
+   * Loosening the approval threshold (raising it, or switching it off) needs `opts.authorizeLoosen`, which throws unless
+   * the caller may (ApprovalInteractor.authorizeLoosen: the owner's passkey once they have one, else the owner's own
+   * token). Without it, as for a developer key, a loosening is refused; tightening is always allowed.
+   */
+  async updateAgentLimits(
+    userId: string, agentId: string,
+    body: { perTransactionCents?: unknown; dailyCents?: unknown; allowedMccs?: unknown; approvalAboveCents?: unknown },
+    opts: { authorizeLoosen?: (c: ApprovalLoosening) => Promise<void> } = {},
+  ) {
     const card = await this.requireCard(userId);
     const agent = await this.requireAgent(card.cardId, agentId);
+    const nextApproval = parseApprovalAbove(body.approvalAboveCents);
+    const approvalAboveCents = nextApproval === undefined ? agent.approvalAboveCents : nextApproval;
+    const loosening = agent.approvalAboveCents !== null && loosensApproval(agent.approvalAboveCents, approvalAboveCents);
+    if (loosening) {
+      if (!opts.authorizeLoosen) throw forbiddenError("only the owner can raise or switch off an agent's approval threshold");
+      await opts.authorizeLoosen({ cardId: card.cardId, agentId, agentName: agent.name, fromCents: agent.approvalAboveCents!, toCents: approvalAboveCents });
+    }
     const requested: SpendPolicy = {
       perTransactionCents: body.perTransactionCents === undefined ? agent.perTxnCents : requireCents(body.perTransactionCents, "perTransactionCents"),
       dailyCents: body.dailyCents === undefined ? agent.dailyCents : requireCents(body.dailyCents, "dailyCents"),
@@ -610,11 +646,13 @@ export class CardholderInteractor {
     if (mccs) requested.allowedMccs = mccs;
     checkAgentLimits(requested, card);
     const policy = capPolicy({ perTransactionCents: card.perTxnCents, dailyCents: card.dailyCents, lifetimeFundedCents: 0 }, requested);
-    await this.d.agents.updateLimits(card.cardId, agentId, {
-      perTxnCents: policy.perTransactionCents, dailyCents: policy.dailyCents, allowedMccs: policy.allowedMccs ?? null,
-    });
+    // Written only if the threshold is still the one that was checked (and, for a loosening, signed).
+    const written = await this.d.agents.updateLimits(card.cardId, agentId, {
+      perTxnCents: policy.perTransactionCents, dailyCents: policy.dailyCents, allowedMccs: policy.allowedMccs ?? null, approvalAboveCents,
+    }, agent.approvalAboveCents);
+    if (!written) throw conflictError("the agent's approval threshold changed meanwhile; reload and try again");
     this.d.wallets.setPolicy(card.cardId, agentId, policy);
-    return policy;
+    return { ...policy, approvalAboveCents };
   }
 
   private async agentsOf(cardId: string) {
@@ -624,6 +662,7 @@ export class CardholderInteractor {
       name: a.name,
       revoked: a.revokedAt !== null,
       policy: policyOf(a),
+      approvalAboveCents: a.approvalAboveCents,
       balanceCents: await this.d.wallets.balance(cardId, a.agentId),
       spentTodayCents: await this.spentToday(cardId, a.agentId),
       recent: await this.spends(cardId, a.agentId, 10),

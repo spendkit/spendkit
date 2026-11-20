@@ -1,6 +1,6 @@
 import type { AgentCardsApp } from "../createApp.js";
 import { Router } from "../lib/http/Router.js";
-import { getAsset, getCheckoutJson, getCheckoutPage, getPage, healthz } from "../controllers/publicController.js";
+import { getApprovePage, getAsset, getCheckoutJson, getCheckoutPage, getPage, healthz } from "../controllers/publicController.js";
 import { PAGES } from "../presentation/staticFiles.js";
 
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -12,6 +12,7 @@ export const publicRouter = (app: AgentCardsApp) => {
   const router = new Router();
   router.on(["GET", "HEAD"], PAGE_PATHS, getPage());
   router.on(["GET", "HEAD"], "/assets/:name", getAsset());
+  router.on(["GET", "HEAD"], "/app/approve/:spendId([A-Za-z0-9_]{1,64})", getApprovePage());
   router.get("/healthz", healthz());
   router.on(["GET", "HEAD"], `/pay/${CHECKOUT_ID}`, getCheckoutPage(app));
   router.on(["GET", "HEAD"], `/v1/checkouts/${CHECKOUT_ID}`, getCheckoutJson(app));

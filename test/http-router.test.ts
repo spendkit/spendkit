@@ -133,7 +133,10 @@ test("routes reach the right interactor with the right arguments", async () => {
     for (const [method, path, opts, status, expected, body] of cases) {
       const r = await s.call(method, path, opts);
       assert.equal(r.status, status, `${method} ${path}: ${r.text}`);
-      assert.deepEqual(last(calls), expected, `${method} ${path}`);
+      // The owner limits route passes an options object ({ authorizeLoosen }); compare without it.
+      const got = last(calls)!.map((a) => (a && typeof a === "object" && "authorizeLoosen" in a ? "<loosen opts>" : a));
+      const want = path === "/api/me/agents/a_1/limits" ? [...expected, "<loosen opts>"] : expected;
+      assert.deepEqual(got, want, `${method} ${path}`);
       if (body !== undefined) assert.deepEqual(r.json, body, `${method} ${path} body`);
     }
   } finally {

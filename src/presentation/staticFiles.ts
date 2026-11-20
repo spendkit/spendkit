@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 const WEB = join(dirname(fileURLToPath(import.meta.url)), "web");
 /** Page routes and the only files served under /assets. Anything else is a 404, so no path can leave WEB. */
 export const PAGES: Record<string, string> = { "/": "index.html", "/docs": "docs.html", "/docs/checkout": "docs-checkout.html","/app": "app.html", "/connect": "connect.html" };
-export const ASSETS = new Set(["site.css", "site.js", "app.js", "docs.js", "home.js", "landing.js", "connect.js"]);
+export const ASSETS = new Set(["site.css", "site.js", "app.js", "docs.js", "home.js", "landing.js", "connect.js", "approve.js"]);
 const TYPES: Record<string, string> = { ".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8" };
 // Scripts and styles only from ourselves; inline styles are allowed (generated markup uses style=""), inline scripts never.
 export const CSP = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
