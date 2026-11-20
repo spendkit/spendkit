@@ -12,11 +12,15 @@ import { AgentCardsError } from "../src/errors.js";
 import type { AddressInfo } from "node:net";
 import { createAppServer } from "../src/createHttpServer.js";
 import { AgentWallets } from "../src/lib/services/AgentWallets.js";
-import { Ledger } from "../src/lib/services/Ledger.js";
+import { Ledger, accounts } from "../src/lib/services/Ledger.js";
 import { DEFAULT_TIERS } from "../src/lib/services/tiers.js";
 import { createDepositAddressRepository } from "../src/db/repositories/createChainRepositories.js";
 import { CardholderInteractor, type CardholderContext } from "../src/lib/interactors/CardholderInteractor.js";
 import { DeveloperInteractor } from "../src/lib/interactors/DeveloperInteractor.js";
+import { wireIntentApprovals } from "../src/createApp.js";
+import { createLedgerStore } from "../src/db/repositories/createLedgerStore.js";
+import { webhookSignature } from "../src/lib/clients/cardIssuing/miden/webhookSignature.js";
+import type { CallbackAnswer } from "../src/lib/services/SpendIntents.js";
 
 // ---------- pure rules (no database) ----------
 
@@ -112,22 +116,6 @@ after(async () => {
 
 const PUBLIC_URL = "https://app.spendkit.test";
 
-/**
- * Stand-in for migration 014 (spend-intents branch): only the columns this feature reads. Removed once 014 lands;
- * IF NOT EXISTS keeps it harmless if 014 is already in the tree.
- */
-const MIGRATION_014_STANDIN = `
-  ALTER TABLE app_spend ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ NOT NULL DEFAULT now() + interval '30 minutes';
-  ALTER TABLE app_spend ADD COLUMN IF NOT EXISTS max_amount_cents BIGINT;
-  ALTER TABLE app_spend ADD COLUMN IF NOT EXISTS approval TEXT NOT NULL DEFAULT 'none';
-  ALTER TABLE app_spend ADD COLUMN IF NOT EXISTS context TEXT;
-  ALTER TABLE app_spend ADD COLUMN IF NOT EXISTS merchant_match TEXT;
-  ALTER TABLE app_spend ADD COLUMN IF NOT EXISTS merchant_acceptor_id TEXT;
-  ALTER TABLE app_spend ADD COLUMN IF NOT EXISTS uses_allowed INTEGER NOT NULL DEFAULT 1;
-  ALTER TABLE app_spend ADD COLUMN IF NOT EXISTS auth_ref TEXT;
-  ALTER TABLE app_spend DROP CONSTRAINT IF EXISTS app_spend_status_check;
-  ALTER TABLE app_spend ADD CONSTRAINT app_spend_status_check CHECK (status IN ('processing', 'approved', 'declined', 'voided', 'expired'));`;
-
 async function setup() {
   const schema = `t_${randomBytes(6).toString("hex")}`;
   await admin!.query(`CREATE SCHEMA ${schema}`);
@@ -135,7 +123,6 @@ async function setup() {
   const pool = new pg.Pool({ connectionString: databaseUrl, options: `-c search_path=${schema}`, max: 4 });
   pools.push(pool);
   await migrate(pool);
-  await pool.query(MIGRATION_014_STANDIN);
   const repos = createRepositories(createDatabase(pool));
   const released: { spendId: string; reason: string }[] = [];
   // Fake of SpendIntents.releaseIntent with the agreed semantics: acts only on a processing, unauthorized intent.
@@ -572,4 +559,73 @@ test("the sign count only moves forward: a stale count loses the race", { skip }
   assert.equal(await t.repos.approvals.recordApprovalChange({ ...base, passkey: { ...sig, newSignCount: 7 } }), "counter_race");
   assert.equal(await t.repos.approvals.recordApprovalChange({ ...base, passkey: { ...sig, newSignCount: 8 } }), "recorded");
   assert.equal((await t.pool.query(`SELECT sign_count FROM app_passkey`)).rows[0].sign_count, "8");
+});
+
+// ---------- wired end to end: the SpendIntents + ApprovalInteractor wiring createApp uses ----------
+
+test("wired: an intent above the threshold waits for the owner; approve lets Miden authorize, deny releases the hold", { skip }, async () => {
+  const schema = `t_${randomBytes(6).toString("hex")}`;
+  await admin!.query(`CREATE SCHEMA ${schema}`);
+  schemas.push(schema);
+  const pool = new pg.Pool({ connectionString: databaseUrl, options: `-c search_path=${schema}`, max: 4 });
+  pools.push(pool);
+  await migrate(pool);
+  const db = createDatabase(pool);
+  const repos = createRepositories(db);
+  await pool.query(`INSERT INTO app_user (id, email, token_hash) VALUES ('u1', 'w@example.com', 'h1')`);
+  await pool.query(`INSERT INTO app_card (card_id, user_id, customer_id, per_txn_cents, daily_cents) VALUES ('c1', 'u1', 'cu1', 100000, 100000)`);
+  await pool.query(`INSERT INTO app_agent (card_id, agent_id, name, token_hash, per_txn_cents, daily_cents, approval_above_cents)
+    VALUES ('c1', 'a_1', 'Shopper', 't1', 100000, 100000, 5000)`);
+  const ledger = new Ledger(() => new Date(), createLedgerStore(db));
+  await ledger.confirmDeposit({ chain: "base", asset: "USDC", cardId: "c1", amountCents: 50000, txHash: "0xw", logIndex: 0 });
+  await ledger.reserveFunding({ cardId: "c1", amountCents: 50000, fundingId: "f1" });
+  await ledger.completeFunding({ cardId: "c1", amountCents: 50000, fundingId: "f1" });
+  await ledger.allocateToAgent({ cardId: "c1", agentId: "a_1", amountCents: 30000, allocationId: "al1" });
+  const bal = (acct: string) => ledger.balance(acct);
+
+  const HASH = "wired-hash";
+  const { approvals, intents } = wireIntentApprovals({
+    approvals: repos.approvals, users: repos.users, agents: repos.agents, intents: repos.intents,
+    publicUrl: PUBLIC_URL, webhookHash: HASH, budgetMs: 2000,
+  });
+  assert.ok(intents);
+  let n = 0;
+  const authorize = async (dollars: number) => {
+    const b = {
+      eventId: `ev_w${++n}`, eventTime: new Date().toISOString(), requestType: "Authorization", cardId: "c1",
+      transactionAmount: dollars, merchantName: "ACME", merchantCategoryCode: "5411", reference: `RW${n}`, cardTransactionAuthorizationId: `auth_w${n}`,
+    };
+    const a: CallbackAnswer = await intents.handleCallback(b, Buffer.from(webhookSignature(b.eventId, b.eventTime, HASH)).toString("base64"));
+    return a.httpStatus === 200 ? a.body.responseCode : String(a.httpStatus);
+  };
+  const agent = { cardId: "c1", agentId: "a_1" };
+
+  // At or under the threshold: no approval needed.
+  const small = await intents.createIntent(agent, { amountCents: 4000, merchant: "Acme" });
+  assert.equal(small.status, "processing");
+  assert.equal(await authorize(40), "000");
+
+  // Above it: pending, with the approval link, and Miden is declined while it waits.
+  const big = await intents.createIntent(agent, { amountCents: 9000, merchant: "Acme" });
+  assert.equal(big.status, "pending_approval");
+  assert.ok(big.status === "pending_approval");
+  assert.equal(big.approvalUrl, `${PUBLIC_URL}/app/approve/${big.spendId}`);
+  assert.equal(await bal(accounts.agent("c1", "a_1")), 30000 - 4000 - 9000);
+  assert.equal(await authorize(90), "119");
+
+  const pk = new SoftPasskey("app.spendkit.test", PUBLIC_URL);
+  await approvals.register("u1", "owner_token", pk.register((await approvals.registrationOptions("u1")).challenge));
+  const ok = await approvals.decisionOptions("u1", big.spendId, "approve");
+  await approvals.decide("u1", big.spendId, "approve", pk.assert(ok.options.challenge));
+  assert.equal(await authorize(90), "000");
+
+  // Deny: the real release puts the held money back with the agent.
+  const denied = await intents.createIntent(agent, { amountCents: 7000, merchant: "Acme" });
+  assert.equal(denied.status, "pending_approval");
+  assert.equal(await bal(accounts.agent("c1", "a_1")), 30000 - 4000 - 9000 - 7000);
+  const no = await approvals.decisionOptions("u1", denied.spendId, "deny");
+  const v = await approvals.decide("u1", denied.spendId, "deny", pk.assert(no.options.challenge));
+  assert.equal(v.status, "declined");
+  assert.equal(await bal(accounts.agent("c1", "a_1")), 30000 - 4000 - 9000);
+  assert.equal(await authorize(70), "119");
 });

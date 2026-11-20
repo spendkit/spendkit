@@ -1,3 +1,4 @@
+import type { Repositories } from "./db/repositories/createRepositories.js";
 import type { CircleDeposits } from "./adapters/deposits/CircleDeposits.js";
 import type { AppParams } from "./domain/types/ContextTypes.js";
 import { approvalRequired } from "./lib/services/approvalPolicy.js";
@@ -61,26 +62,53 @@ export function createApp(p: AppParams): AgentCardsApp & Required<Pick<AgentCard
   const swaps = p.swapConfig.enabled && p.vault
     ? new SwapInteractor({ swaps: p.repos.swaps, app: cardholders, vault: p.vault, filler: p.checkoutFiller, lifecycle: p.lifecycle, config: p.swapConfig, live, log: p.log })
     : undefined;
-  const log = p.log ?? (() => undefined);
+  const { approvals, intents } = wireIntentApprovals({
+    approvals: p.repos.approvals, users: p.repos.users, agents: p.repos.agents, intents: p.repos.intents,
+    publicUrl: p.publicUrl, webhookHash: p.midenWebhookHash, alerts: p.alerts, log: p.log,
+  });
+  const payouts = new PayoutInteractor({ db: p.db, payouts: p.repos.payouts, ledger: p.ledger, checkout: checkouts, rail: p.payoutRail, log: p.log });
+  return { cardholders, checkouts, swaps, swapLive: swaps ? live : undefined, developers, approvals, payouts, circleDeposits: p.circleDeposits, alerts: p.alerts, intents, midenCallbackEnabled: Boolean(intents && p.midenWebhookHash), log: p.log };
+}
+
+/**
+ * Spend intents and human approval, wired into each other: an intent above its agent's threshold starts pending and
+ * returns the approval link; the owner's deny releases the hold through SpendIntents. Exported so tests run this
+ * exact wiring.
+ */
+export function wireIntentApprovals(w: {
+  approvals: Repositories["approvals"];
+  users: Repositories["users"];
+  agents: Pick<Repositories["agents"], "find">;
+  intents?: Repositories["intents"];
+  publicUrl: string;
+  webhookHash?: string;
+  alerts?: Alerter;
+  log?: (msg: string) => void;
+  now?: () => Date;
+  budgetMs?: number;
+}): { approvals: ApprovalInteractor; intents?: SpendIntents } {
+  const log = w.log ?? (() => undefined);
+  let intents: SpendIntents | undefined;
   const approvals = new ApprovalInteractor({
-    approvals: p.repos.approvals, users: p.repos.users, publicUrl: p.publicUrl, log: p.log, alerts: p.alerts,
-    // Late-bound: the deny button releases the hold through SpendIntents, built just below.
+    approvals: w.approvals, users: w.users, publicUrl: w.publicUrl, log: w.log, alerts: w.alerts,
+    ...(w.now ? { now: w.now } : {}),
     intents: { releaseIntent: (spendId, reason) => intents ? intents.releaseIntent(spendId, reason) : Promise.reject(new Error("spend intents are not enabled on this server")) },
   });
-  const intents = p.repos.intents
-    ? new SpendIntents({
-      repo: p.repos.intents,
-      webhookHash: p.midenWebhookHash ?? "",
-      alerter: p.alerts ?? { raise: async (_k, msg) => log(`ALERT ${msg}`) },
+  if (w.intents) {
+    intents = new SpendIntents({
+      repo: w.intents,
+      webhookHash: w.webhookHash ?? "",
+      alerter: w.alerts ?? { raise: async (_k, msg) => log(`ALERT ${msg}`) },
       log,
+      ...(w.now ? { now: w.now } : {}),
+      ...(w.budgetMs ? { budgetMs: w.budgetMs } : {}),
       // Fail closed: an agent we cannot read needs approval.
       approvalRequired: async ({ cardId, agentId }, maxAmountCents) => {
-        const agent = await p.repos.agents.find(cardId, agentId);
+        const agent = await w.agents.find(cardId, agentId);
         return agent ? approvalRequired(agent, maxAmountCents) : true;
       },
       approvalUrl: (spendId) => approvals.approvalUrl(spendId),
-    })
-    : undefined;
-  const payouts = new PayoutInteractor({ db: p.db, payouts: p.repos.payouts, ledger: p.ledger, checkout: checkouts, rail: p.payoutRail, log: p.log });
-  return { cardholders, checkouts, swaps, swapLive: swaps ? live : undefined, developers, approvals, payouts, circleDeposits: p.circleDeposits, alerts: p.alerts, intents, midenCallbackEnabled: Boolean(intents && p.midenWebhookHash), log: p.log };
+    });
+  }
+  return { approvals, intents };
 }
