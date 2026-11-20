@@ -6,8 +6,14 @@ import { toSafeInt } from "../schema/columns.js";
 import { createLedgerStore } from "./createLedgerStore.js";
 
 const holdsMoney = inArray(appSpend.status, ["approved", "processing"]);
-/** An intent holds its maximum, so the daily windows count that, not the display amount. */
-const heldAmount = sql`COALESCE(sum(COALESCE(${appSpend.maxAmountCents}, ${appSpend.amountCents})), 0)`.mapWith(toSafeInt);
+/**
+ * What a spend holds against the daily limits: a plain payment its amount; an open intent its maximum (the hold);
+ * an authorized intent what actually left (the rest of the hold returns at settlement).
+ */
+const heldAmount = sql`COALESCE(sum(CASE
+  WHEN ${appSpend.expiresAt} IS NULL THEN ${appSpend.amountCents}
+  WHEN ${appSpend.authRef} IS NULL THEN ${appSpend.maxAmountCents}
+  ELSE ${appSpend.capturedCents} END), 0)`.mapWith(toSafeInt);
 
 async function sumHeld(q: Executor, where: SQL | undefined): Promise<number> {
   const [row] = await q.select({ s: heldAmount }).from(appSpend).where(where);
@@ -34,6 +40,14 @@ function intentTx(tx: Transaction): IntentTx {
       if (card) return { kind: "reusable", cardId: card.cardId };
       const [one] = await tx.select({ spendId: appOneTimeCard.spendId }).from(appOneTimeCard).where(eq(appOneTimeCard.cardId, midenCardId));
       return one ? { kind: "one_time", cardId: midenCardId, spendId: one.spendId } : undefined;
+    },
+
+    async findAgent(cardId, agentId) {
+      const [row] = await tx
+        .select({ perTxnCents: appAgent.perTxnCents, dailyCents: appAgent.dailyCents, allowedMccs: appAgent.allowedMccs, revokedAt: appAgent.revokedAt })
+        .from(appAgent)
+        .where(and(eq(appAgent.cardId, cardId), eq(appAgent.agentId, agentId)));
+      return row;
     },
 
     async openIntentsForUpdate(cardId, now) {

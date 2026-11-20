@@ -36,6 +36,7 @@ export interface IntentTx {
   claimEvent(e: { eventId: string; source: MidenEventSource; requestType: string | null; cardId: string | null }): Promise<StoredMidenEvent | undefined>;
   setEventDecision(eventId: string, decision: string, spendId: string | null): Promise<void>;
   findCard(midenCardId: string): Promise<IntentCard | undefined>;
+  findAgent(cardId: string, agentId: string): Promise<Pick<Agent, "perTxnCents" | "dailyCents" | "allowedMccs" | "revokedAt"> | undefined>;
   /**
    * Open intents on the card: processing, expires_at > now, uses < uses_allowed, approval not pending, agent not
    * revoked. FOR UPDATE SKIP LOCKED, so a concurrent authorization never waits on (or takes) the same row.

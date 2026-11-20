@@ -14,6 +14,7 @@ import type { OneTimeCardStatus } from "../../domain/repositories/OneTimeCardRep
 import { CardProviderApiError, DuplicateReferenceError, isDefiniteRefusal, providerMessage } from "../../domain/errors/CardProviderErrors.js";
 import type { CardIssuerPort, CardLifecyclePort, CardTransaction, IndividualKyc } from "../../domain/interfaces/CardIssuing.js";
 import { evaluate, type SpendPolicy } from "../services/spendPolicy.js";
+import { INTENT_KEY_PREFIX } from "../services/SpendIntents.js";
 import { capPolicy, type Tier, type TierLimits } from "../services/tiers.js";
 import type { FundingSource } from "../../domain/interfaces/FundingSource.js";
 import { accounts, LedgerError, type Ledger, type LedgerTransaction } from "../services/Ledger.js";
@@ -101,8 +102,6 @@ const RESEND_WINDOW_MS = 20 * 3_600_000;
 export const INTERNAL_KEY_PREFIX = "checkout:";
 /** Spend keys of checkout-swap payments (src/checkout-swap): charged by filling a hosted checkout, reconciled by SwapInteractor. */
 export const SWAP_KEY_PREFIX = "checkout:swap:";
-/** app_spend.idempotency_key prefix of spend intents (lib/services/SpendIntents.ts). */
-export const INTENT_KEY_PREFIX = "intent:";
 
 /**
  * How an internal caller charges the card instead of Miden's simulated authorization. Called once, after the
