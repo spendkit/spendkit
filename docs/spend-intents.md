@@ -102,3 +102,4 @@ Miden caps a customer at **3 cards, one-time cards included** (architecture.md, 
 - `context` is capped at 500 characters, control characters are stripped, and an empty value is rejected. It is shown as plain text only.
 - v1 intents are single-use only (`uses_allowed = 1`).
 - Migrations: 014 is spend intents (Obi), 015 is Val's work, and 016 is Mira's approval work (`app_agent.approval_above_cents`, `app_passkey`, `app_spend_approval`). Mira only changes `approval` from `pending` to `approved`. Approval evidence lives in her table.
+- Mira's paths: `src/lib/services/approvalPolicy.ts` (`approvalRequired(agent: { approvalAboveCents: number | null }, maxAmountCents)`) and `src/lib/interactors/ApprovalInteractor.ts` (`app.approvals.approvalUrl(spendId)`, which returns `${publicUrl}/app/approve/<spendId>`). Until this branch lands, she codes against `IntentPort = { releaseIntent }`.
