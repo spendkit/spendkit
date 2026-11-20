@@ -7,7 +7,10 @@ Status: built on branch `spend-intents`, 2026-11-20 (Obi), not merged. Code: `sr
 - **Unmatched settlement (force post):** alerts and moves no money. Posting at the owner level waits until Miden confirms how settlement is funded.
 - **An unreadable amount** declines with `111 INVALID_AMT` (from Miden's table), not `131`.
 - **A settlement, reversal or refund is linked to its authorization** by trying `cardTransactionAuthorizationId`, then `precedingRelatedToken`, then `reference`. Miden doesn't document which one it sends. **Ask Miden.**
-- **The same authorization asked again under a new `eventId`** (same `cardTransactionAuthorizationId`): approved again if the amount is the same, and no money moves.
+- **The same authorization asked again under a new `eventId`:** approved again, with no money moving, only when the `cardTransactionAuthorizationId`, the card, the amount and the `merchantAcceptorId` are all the same (stored in `auth_acceptor_id`). Anything else declines `119`. A decision with no `cardTransactionAuthorizationId` declines `131`; `reference` is never a key for a decision. Follow-ups also try `precedingRelatedToken` and `reference`, but only against spends on the same card.
+- **Decisions on one card are serialised** by locking the `app_card` row, then reading intents with a plain `FOR UPDATE`. Lin's review ruled out `SKIP LOCKED`: it skipped intents, which caused false bypass declines and could let the wrong agent's intent win.
+- **Merchant name match is on whole words.** A reversal with amount 0 alerts and returns nothing.
+- **Before Miden turns on customer-managed authorization:** webhook claims in `miden_event`, a sandbox check of what `eventTime` means, and the provisional-approval sweeper (todos tmwoowpst4/5/6).
 - **One-time cards** (hosted checkout): one authorization is approved up to the amount of the spend that `pay()` already debited.
 - **Daily limits** count an open intent at its `max_amount_cents` and an authorized intent at `captured_cents`.
 - **Not built yet:** an MCP tool for intents, and the provisional-approval sweeper that checks Miden after N days.

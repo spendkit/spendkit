@@ -37,14 +37,17 @@ export interface IntentTx {
   setEventDecision(eventId: string, decision: string, spendId: string | null): Promise<void>;
   findCard(midenCardId: string): Promise<IntentCard | undefined>;
   findAgent(cardId: string, agentId: string): Promise<Pick<Agent, "perTxnCents" | "dailyCents" | "allowedMccs" | "revokedAt"> | undefined>;
+  /** Locks the app_card row: every authorization decision on the card queues behind it. False if no such card. */
+  lockCard(cardId: string): Promise<boolean>;
   /**
    * Open intents on the card: processing, expires_at > now, uses < uses_allowed, approval not pending, agent not
-   * revoked. FOR UPDATE SKIP LOCKED, so a concurrent authorization never waits on (or takes) the same row.
+   * revoked. Plain FOR UPDATE (never SKIP LOCKED: a skipped row could let another agent's intent win a decision that
+   * must decline as ambiguous). Call lockCard first; lock_timeout bounds any wait.
    */
   openIntentsForUpdate(cardId: string, now: Date): Promise<OpenIntent[]>;
   lockSpend(spendId: string): Promise<Spend | undefined>;
   findByAuthRefForUpdate(authRef: string): Promise<Spend | undefined>;
-  update(spendId: string, set: Partial<Pick<Spend, "status" | "reason" | "uses" | "authRef" | "authState" | "capturedCents" | "approval" | "midenAuthId">>): Promise<Spend>;
+  update(spendId: string, set: Partial<Pick<Spend, "status" | "reason" | "uses" | "authRef" | "authState" | "authAcceptorId" | "capturedCents" | "approval" | "midenAuthId">>): Promise<Spend>;
   insert(row: NewSpend): Promise<Spend>;
   findByKey(cardId: string, agentId: string, idempotencyKey: string): Promise<Spend | undefined>;
   /** Locks the card row (serialising every limit check on the card) and sums the window. Undefined if no card. */

@@ -201,6 +201,48 @@ test("concurrent authorizations for one intent: exactly one approves", { skip },
   assert.equal(await bal(accounts.merchant()), 1000);
 });
 
+test("concurrent authorizations for two agents' intents on the shared card both approve (no false bypass)", { skip }, async () => {
+  const { intents, alerts, bal } = await setup();
+  await intents.createIntent(A1, { amountCents: 1000, merchant: "Acme" });
+  await intents.createIntent(A2, { amountCents: 2000, merchant: "Globex" });
+  const answers = await Promise.all([
+    call(intents, event({ transactionAmount: 10, merchantName: "ACME" })),
+    call(intents, event({ transactionAmount: 20, merchantName: "GLOBEX" })),
+  ]);
+  assert.deepEqual(answers.map(code), ["000", "000"]);
+  assert.equal(await bal(accounts.merchant()), 3000);
+  assert.equal(alerts.length, 0);
+});
+
+test("a repeated authorization is free only when it is the same authorization on the same card", { skip }, async () => {
+  const { intents, pool, bal } = await setup();
+  await intents.createIntent(A1, { amountCents: 1000, merchant: "Acme" });
+  const first = event({ transactionAmount: 10, merchantAcceptorId: "MID1" });
+  assert.equal(code(await call(intents, first)), "000");
+  const again = (over: Record<string, unknown>) =>
+    call(intents, event({ transactionAmount: 10, merchantAcceptorId: "MID1", cardTransactionAuthorizationId: first.cardTransactionAuthorizationId, ...over }));
+  assert.equal(code(await again({})), "000", "the same authorization asked again");
+  assert.equal(code(await again({ transactionAmount: 9 })), "119", "different amount");
+  assert.equal(code(await again({ merchantAcceptorId: "MID2" })), "119", "different acceptor");
+  await pool.query("INSERT INTO app_user (id, email, token_hash) VALUES ('u2', 'b@example.com', 'h2')");
+  await pool.query("INSERT INTO app_card (card_id, user_id, customer_id, per_txn_cents, daily_cents) VALUES ('c2', 'u2', 'cu2', 10000, 50000)");
+  assert.equal(code(await again({ cardId: "c2" })), "119", "another card");
+  // A reference that matches an earlier approval is never a key for a decision; no authorization id is 131.
+  assert.equal(code(await call(intents, event({ transactionAmount: 10, reference: first.reference, cardTransactionAuthorizationId: undefined }))), "131");
+  assert.equal(await bal(accounts.merchant()), 1000);
+});
+
+test("merchant match is whole words; a reversal of 0 returns nothing", { skip }, async () => {
+  const { intents, alerts, bal } = await setup();
+  await intents.createIntent(A1, { amountCents: 1000, merchant: "Acme" });
+  assert.equal(code(await call(intents, event({ transactionAmount: 10, merchantName: "ACMEX Ltd" }))), "119");
+  const auth = event({ transactionAmount: 10, merchantName: "The ACME Store" });
+  assert.equal(code(await call(intents, auth)), "000");
+  await call(intents, event({ requestType: "Reversal", transactionAmount: 0, cardTransactionAuthorizationId: auth.cardTransactionAuthorizationId }));
+  assert.equal(await bal(accounts.merchant()), 1000);
+  assert.ok(alerts.some((a) => /amount 0/.test(a)));
+});
+
 test("over budget: declines 911 and commits nothing", { skip }, async () => {
   const { intents, pool, bal } = await setup({ budgetMs: 150 });
   await intents.createIntent(A1, { amountCents: 1000, merchant: "Acme" });

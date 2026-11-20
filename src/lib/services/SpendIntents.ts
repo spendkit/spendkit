@@ -1,5 +1,5 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import type { IntentRepository, IntentTx, OpenIntent } from "../../domain/repositories/IntentRepository.js";
+import type { IntentCard, IntentRepository, IntentTx, OpenIntent } from "../../domain/repositories/IntentRepository.js";
 import type { Spend } from "../../domain/types/Entities.js";
 import { badRequestError, conflictError, notFoundError } from "../../errors.js";
 import { webhookSignature } from "../clients/cardIssuing/miden/webhookSignature.js";
@@ -248,6 +248,11 @@ export function verifyCallbackSignature(eventId: string, eventTime: string, head
 
 class BudgetExceeded extends Error {}
 
+/** True if the spend was paid with this Miden card: an intent on the reusable card, or the one-time card's own spend. */
+function belongsTo(s: Spend, card: IntentCard): boolean {
+  return card.kind === "reusable" ? s.cardId === card.cardId && s.expiresAt !== null : s.spendId === card.spendId;
+}
+
 export class SpendIntents {
   private readonly now: () => Date;
   private readonly log: (msg: string) => void;
@@ -458,11 +463,19 @@ export class SpendIntents {
     if (!card) return record(DECISIONS.cardClosed);
     const total = b.totalCents!;
 
-    const authRef = b.authId ?? (b.reference ? `ref:${b.reference}` : null);
-    if (!authRef) return record(DECISIONS.invalidRequest);
-    // The same authorization asked again under a new eventId: answer as before, move nothing.
+    // A decision needs Miden's own authorization id: never key one on `reference`, which a merchant may repeat.
+    if (!b.authId) return record(DECISIONS.invalidRequest);
+    const authRef = b.authId;
+    // Lock the card row first: every decision on this card queues behind it, so no intent is ever skipped.
+    if (card.kind === "reusable" && !(await tx.lockCard(card.cardId))) return record(DECISIONS.cardClosed);
+    // The same authorization asked again under a new eventId: approve again (moving nothing) only if it is the same
+    // authorization id, on the same card, for the same amount and the same merchant acceptor. Anything else declines.
     const already = await tx.findByAuthRefForUpdate(authRef);
-    if (already) return record(already.capturedCents === total ? DECISIONS.approve : DECISIONS.notPermitted, already.spendId);
+    if (already) {
+      const same = belongsTo(already, card) && already.authState === "provisional" && already.capturedCents === total && already.authAcceptorId === b.merchantAcceptorId;
+      if (!same) void this.alert(`miden-authref-reuse:${authRef}`, `Authorization id ${authRef} asked again on card ${b.cardId} (${total}c) but does not match its first use on ${already.spendId}; declined 119`);
+      return record(same ? DECISIONS.approve : DECISIONS.notPermitted, already.spendId);
+    }
 
     if (card.kind === "one_time") return record(await this.decideOneTime(tx, card.spendId, total, authRef, b), card.spendId);
 
@@ -472,7 +485,7 @@ export class SpendIntents {
       total <= s.maxAmountCents!
       && (s.mcc === null || s.mcc === b.mcc)
       && (!s.agent.allowedMccs?.length || (b.mcc !== null && s.agent.allowedMccs.includes(b.mcc)))
-      && (s.merchantMatch === null || merchant.includes(s.merchantMatch))
+      && (s.merchantMatch === null || ` ${merchant} `.includes(` ${s.merchantMatch} `))
       && (s.merchantAcceptorId === null || s.merchantAcceptorId === b.merchantAcceptorId);
     const candidates = open.filter(fits);
     if (candidates.length === 0) {
@@ -488,7 +501,7 @@ export class SpendIntents {
     const pick = [...candidates].sort((x, y) => (x.maxAmountCents! - total) - (y.maxAmountCents! - total))[0]!;
     await this.ledger(tx).captureIntent({ cardId: pick.cardId, spendId: pick.spendId, amountCents: total, authRef });
     await tx.update(pick.spendId, {
-      status: "approved", uses: pick.uses + 1, authRef, authState: "provisional", capturedCents: total, ...(b.authId ? { midenAuthId: b.authId } : {}),
+      status: "approved", uses: pick.uses + 1, authRef, authState: "provisional", capturedCents: total, authAcceptorId: b.merchantAcceptorId, ...(b.authId ? { midenAuthId: b.authId } : {}),
     });
     return record(DECISIONS.approve, pick.spendId);
   }
@@ -501,7 +514,7 @@ export class SpendIntents {
     const s = await tx.lockSpend(spendId);
     if (!s || s.status !== "approved" || s.authRef !== null) return DECISIONS.notPermitted;
     if (total > s.amountCents) return DECISIONS.limitExceeded;
-    await tx.update(spendId, { authRef, authState: "provisional", capturedCents: total, ...(b.authId ? { midenAuthId: b.authId } : {}) });
+    await tx.update(spendId, { authRef, authState: "provisional", capturedCents: total, authAcceptorId: b.merchantAcceptorId, ...(b.authId ? { midenAuthId: b.authId } : {}) });
     return DECISIONS.approve;
   }
 
@@ -512,9 +525,15 @@ export class SpendIntents {
   private async applyFollowUp(tx: IntentTx, b: CallbackBody): Promise<void> {
     const seen = await tx.claimEvent({ eventId: b.eventId, source: "callback", requestType: b.requestType, cardId: b.cardId });
     if (seen) return;
+    // Only a spend on this same Miden card can be the one followed up.
+    const card = await tx.findCard(b.cardId);
     let s: Spend | undefined;
-    for (const ref of [b.authId, b.precedingRelatedToken, b.reference ? `ref:${b.reference}` : null]) {
-      if (ref && (s = await tx.findByAuthRefForUpdate(ref))) break;
+    for (const ref of card ? [b.authId, b.precedingRelatedToken, b.reference] : []) {
+      const found = ref ? await tx.findByAuthRefForUpdate(ref) : undefined;
+      if (found && belongsTo(found, card!)) {
+        s = found;
+        break;
+      }
     }
     const done = (what: string) => tx.setEventDecision(b.eventId, what, s?.spendId ?? null);
     const amount = b.totalCents;
@@ -553,8 +572,13 @@ export class SpendIntents {
       await tx.update(s.spendId, { authState: "settled", capturedCents: amount });
       return done("settled");
     }
-    // Reversal, PartialReversal, Refund: money back from the merchant, never more than went out.
-    const back = Math.min(b.requestType === "Reversal" ? (amount || s.capturedCents) : amount, s.capturedCents);
+    // Reversal, PartialReversal, Refund: money back from the merchant, never more than went out. An amount of 0 is
+    // undocumented: alert, never guess "full".
+    if (amount === 0) {
+      void this.alert(`miden-zero-return:${b.eventId}`, `Miden ${b.requestType} ${b.eventId} on ${s.spendId} has amount 0; nothing returned, needs review`);
+      return done("zero_amount");
+    }
+    const back = Math.min(amount, s.capturedCents);
     if (back > 0) {
       await ledger.returnIntentPayment({ cardId: s.cardId, agentId: s.agentId, spendId: s.spendId, eventId: b.eventId, amountCents: back, kind: b.requestType === "Refund" ? "intent_refund" : "intent_reversal" });
     }
@@ -572,6 +596,8 @@ export class SpendIntents {
   /** Someone used the card outside our flow. One alert per card per 10 minutes, with the count since the last. */
   private bypassAlert(cardId: string, b: CallbackBody, openCount: number): void {
     const now = Date.now();
+    // Per process and in memory; bounded so card testing across many cards cannot grow it without limit.
+    if (this.bypass.size > 10_000 && !this.bypass.has(cardId)) this.bypass.clear();
     const st = this.bypass.get(cardId) ?? { last: 0, count: 0 };
     st.count++;
     this.bypass.set(cardId, st);

@@ -102,6 +102,8 @@ export const appSpend = pgTable(
     /** Miden cardTransactionAuthorizationId that consumed the intent. */
     authRef: text("auth_ref"),
     authState: text("auth_state", { enum: INTENT_AUTH_STATES }),
+    /** merchantAcceptorId of that authorization: a repeat must carry the same one. */
+    authAcceptorId: text("auth_acceptor_id"),
     /** What has left toward the merchant for this intent so far. */
     capturedCents: bigintNumber("captured_cents").notNull().default(0),
     context: text("context"),

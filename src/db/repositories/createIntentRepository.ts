@@ -50,6 +50,11 @@ function intentTx(tx: Transaction): IntentTx {
       return row;
     },
 
+    async lockCard(cardId) {
+      const [card] = await tx.select({ cardId: appCard.cardId }).from(appCard).where(eq(appCard.cardId, cardId)).for("update");
+      return Boolean(card);
+    },
+
     async openIntentsForUpdate(cardId, now) {
       const rows = await tx
         .select({ spend: appSpend, perTxnCents: appAgent.perTxnCents, dailyCents: appAgent.dailyCents, allowedMccs: appAgent.allowedMccs })
@@ -66,7 +71,7 @@ function intentTx(tx: Transaction): IntentTx {
           isNull(appAgent.revokedAt),
         ))
         .orderBy(asc(appSpend.createdAt))
-        .for("update", { of: appSpend, skipLocked: true });
+        .for("update", { of: appSpend });
       return rows.map((r): OpenIntent => ({ ...r.spend, agent: { perTxnCents: r.perTxnCents, dailyCents: r.dailyCents, allowedMccs: r.allowedMccs } }));
     },
 

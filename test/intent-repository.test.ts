@@ -52,7 +52,7 @@ test("claimEvent: a duplicate returns the stored event and leaves the transactio
   assert.deepEqual(again, { eventId: "e1", source: "callback", decision: "{\"responseCode\":\"000\"}" });
 });
 
-test("openIntentsForUpdate filters closed rows and skips rows locked by another transaction", { skip }, async () => {
+test("openIntentsForUpdate filters closed rows, and waits on a locked row instead of skipping it", { skip }, async () => {
   const { repo } = await fresh();
   await repo.transaction(async (tx) => {
     await tx.insert(intent("s1"));
@@ -61,6 +61,9 @@ test("openIntentsForUpdate filters closed rows and skips rows locked by another 
     await tx.insert(intent("old", { expiresAt: new Date(Date.now() - 1000) }));
     await tx.insert(intent("plain", { expiresAt: null, maxAmountCents: null, merchantMatch: null, idempotencyKey: "k" }));
   });
+  const all = await repo.transaction((tx) => tx.openIntentsForUpdate("c1", new Date()));
+  assert.deepEqual(all.map((s) => s.spendId).sort(), ["s1", "s2"]);
+  assert.equal(all[0]!.agent.perTxnCents, 5000);
   let release!: () => void;
   const held = new Promise<void>((r) => (release = r));
   let locked!: () => void;
@@ -71,11 +74,10 @@ test("openIntentsForUpdate filters closed rows and skips rows locked by another 
     await held;
   });
   await isLocked;
-  const seen = await repo.transaction((tx) => tx.openIntentsForUpdate("c1", new Date()));
+  // Never SKIP LOCKED: a skipped row could let another agent's intent win. lock_timeout turns the wait into an error.
+  await assert.rejects(repo.transaction((tx) => tx.openIntentsForUpdate("c1", new Date()), { timeoutMs: 100 }));
   release();
   await holder;
-  assert.deepEqual(seen.map((s) => s.spendId), ["s2"]);
-  assert.equal(seen[0]!.agent.perTxnCents, 5000);
 });
 
 test("findCard knows one-time cards", { skip }, async () => {

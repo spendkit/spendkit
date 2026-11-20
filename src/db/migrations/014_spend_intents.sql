@@ -14,6 +14,8 @@ ALTER TABLE app_spend
   -- Miden cardTransactionAuthorizationId of the authorization that consumed the intent.
   ADD COLUMN auth_ref TEXT,
   ADD COLUMN auth_state TEXT,
+  -- merchantAcceptorId of that authorization: a repeat must carry the same one.
+  ADD COLUMN auth_acceptor_id TEXT,
   -- What has left toward the merchant for this intent so far (authorized, then adjusted by settlement, reversals, refunds).
   ADD COLUMN captured_cents BIGINT NOT NULL DEFAULT 0,
   -- Agent text shown to the owner; plain text.
