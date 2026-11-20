@@ -248,6 +248,8 @@ export class ApprovalInteractor {
       if (rel.status) r.intent.status = rel.status;
       this.log(`intent ${spendId}: denied by owner ${userId}, hold ${rel.released ? "released" : "already released"}`);
     } catch (e) {
+      // Safe only because the intent keeps approval='pending' here (014 has no 'denied' value) and the Miden callback skips
+      // pending intents, so it declines 119 until the expiry sweep releases it. Adding a 'denied' value means updating that query.
       this.log(`intent ${spendId}: denied, but releasing the hold failed (the sweeper will release it at expiry): ${(e as Error).message}`);
     }
     return view(r.intent, decided);
