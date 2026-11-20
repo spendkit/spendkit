@@ -231,7 +231,7 @@ test("an authorization that arrives while another decision holds the card waits 
     await holder.query("COMMIT");
     assert.equal(code(await pending), "000");
   } finally {
-    holder.release();
+    holder.release(true); // destroy, never return a connection that may still hold the locks to the pool
   }
   assert.equal(await bal(accounts.merchant()), 2000);
   assert.equal(alerts.length, 0);
