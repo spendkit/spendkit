@@ -203,6 +203,7 @@ export async function bootstrapApplication(env: NodeJS.ProcessEnv = process.env)
     watchedNetworks: circleOnly ? [] : allNetworks,
     circleDeposits,
     publicUrl,
+    ...(env.MIDEN_WEBHOOK_HASH ? { midenWebhookHash: env.MIDEN_WEBHOOK_HASH } : {}),
     // Sandbox default 10 minutes so a demo can pay out the same day; the code default (and production) is 24 h.
     payoutAddressDelayMs: Number(env.PAYOUT_ADDRESS_DELAY_S ?? 600) * 1000,
     isOwnAddress,

@@ -19,6 +19,7 @@ import { webhooksRouter } from "./routes/webhooksRouter.js";
  *   /  /docs  /app  /connect   site pages and /assets/... (presentation/web)
  *   /healthz                   health check
  *   /webhooks/circle           Circle deposit webhooks (signed)
+ *   /webhooks/miden/authorization  Miden customer-managed authorization callback (signed; 404 without MIDEN_WEBHOOK_HASH)
  *   /pay/<id>  /v1/checkouts/<id>   a checkout's public page and JSON (the unguessable id is the access)
  *   /mcp                       MCP (streamable HTTP, stateless), `Authorization: Bearer ak_...`
  *   /agent/v1/...              agent REST API, `Authorization: Bearer ak_...`

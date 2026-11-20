@@ -25,6 +25,8 @@ import { createMerchantRepository } from "./createMerchantRepository.js";
 import type { MerchantRepository } from "../../domain/repositories/MerchantRepository.js";
 import { createCheckoutRepository } from "./createCheckoutRepository.js";
 import type { CheckoutRepository } from "../../domain/repositories/CheckoutRepository.js";
+import { createIntentRepository } from "./createIntentRepository.js";
+import type { IntentRepository } from "../../domain/repositories/IntentRepository.js";
 import { createSwapRepository } from "./createSwapRepository.js";
 import type { SwapRepository } from "../../domain/repositories/SwapRepository.js";
 
@@ -48,6 +50,7 @@ export interface Repositories {
   merchants: MerchantRepository;
   checkouts: CheckoutRepository;
   swaps: SwapRepository;
+  intents: IntentRepository;
 }
 
 export function createRepositories(db: Database): Repositories {
@@ -66,5 +69,6 @@ export function createRepositories(db: Database): Repositories {
     merchants: createMerchantRepository(db),
     checkouts: createCheckoutRepository(db),
     swaps: createSwapRepository(db),
+    intents: createIntentRepository(db),
   };
 }

@@ -14,6 +14,7 @@ import type { OneTimeCardStatus } from "../../domain/repositories/OneTimeCardRep
 import { CardProviderApiError, DuplicateReferenceError, isDefiniteRefusal, providerMessage } from "../../domain/errors/CardProviderErrors.js";
 import type { CardIssuerPort, CardLifecyclePort, CardTransaction, IndividualKyc } from "../../domain/interfaces/CardIssuing.js";
 import { evaluate, type SpendPolicy } from "../services/spendPolicy.js";
+import { INTENT_KEY_PREFIX } from "../services/SpendIntents.js";
 import { capPolicy, type Tier, type TierLimits } from "../services/tiers.js";
 import type { FundingSource } from "../../domain/interfaces/FundingSource.js";
 import { accounts, LedgerError, type Ledger, type LedgerTransaction } from "../services/Ledger.js";
@@ -79,7 +80,8 @@ export interface SpendView {
   amountCents: number;
   merchant: string;
   mcc: string | null;
-  status: "processing" | "approved" | "declined" | "voided";
+  /** "expired": a spend intent that no authorization used (lib/services/SpendIntents.ts). */
+  status: "processing" | "approved" | "declined" | "voided" | "expired";
   reason: string | null;
   createdAt: string;
 }
@@ -736,6 +738,8 @@ export class CardholderInteractor {
     const key = req.idempotencyKey === undefined || req.idempotencyKey === "" ? newId("auto", 12) : requireText(req.idempotencyKey, "idempotencyKey", 100);
     // Checkout keys are ours (CheckoutInteractor): an agent pre-spending under one could pass it off as the checkout's payment.
     if (key.startsWith(INTERNAL_KEY_PREFIX) && !opts.internal) throw badRequestError(`idempotencyKey must not start with "${INTERNAL_KEY_PREFIX}"`);
+    // Spend intents keep their keys under their own prefix (SpendIntents), so a payment can never answer as an intent.
+    if (key.startsWith(INTENT_KEY_PREFIX)) throw badRequestError(`idempotencyKey must not start with "${INTENT_KEY_PREFIX}"`);
     // A swap charge must live under a swap key, so the right reconcile owns it; and a swap key always has one.
     if (Boolean(opts.charge) !== key.startsWith(SWAP_KEY_PREFIX)) throw badRequestError("a custom charge needs a swap key, and a swap key needs a custom charge");
     const lockKey = `${p.cardId}:${p.agentId}:${key}`;

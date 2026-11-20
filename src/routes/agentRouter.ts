@@ -2,7 +2,7 @@ import type { AgentCardsApp } from "../createApp.js";
 import { Router } from "../lib/http/Router.js";
 import { jsonBody } from "../lib/middleware/bodyParser.js";
 import {
-  getCheckout, getHostedCheckout, getWallet, listHostedCheckouts, listTransactions, pay, payCheckout, payHostedCheckout, watchHostedCheckouts,
+  createIntent, getCheckout, getHostedCheckout, getIntent, getWallet, listHostedCheckouts, listTransactions, pay, payCheckout, payHostedCheckout, watchHostedCheckouts,
 } from "../controllers/agentController.js";
 
 /** Mounted at /agent/v1/ behind `authorizeAgent`. */
@@ -11,6 +11,8 @@ export const agentRouter = (app: AgentCardsApp) => {
   router.get("/wallet", getWallet(app));
   router.get("/transactions", listTransactions(app));
   router.post("/pay", jsonBody, pay(app));
+  router.post("/intents", jsonBody, createIntent(app));
+  router.get("/intents/:spendId(sp_[a-f0-9]{20})", getIntent(app));
   router.get("/checkouts/:checkoutId([A-Za-z0-9_]+)", getCheckout(app));
   router.post("/checkouts/:checkoutId([A-Za-z0-9_]+)/pay", jsonBody, payCheckout(app));
   router.post("/hosted-checkouts/pay", jsonBody, payHostedCheckout(app));

@@ -2,7 +2,7 @@ import type { AgentCardsApp } from "../createApp.js";
 import type { AppRequest } from "../domain/types/RequestTypes.js";
 import type { AgentPrincipal } from "../lib/interactors/CardholderInteractor.js";
 import { limitOf, sendJson } from "../lib/http/respond.js";
-import { requireCheckouts, requireSwaps } from "../lib/utils/requireFeature.js";
+import { requireCheckouts, requireIntents, requireSwaps } from "../lib/utils/requireFeature.js";
 import createControllerMethod from "./utils/createControllerMethod.js";
 
 /*
@@ -80,4 +80,19 @@ export const watchHostedCheckouts = (app: AgentCardsApp) =>
     await new Promise<void>((resolve) => req.on("close", () => resolve()));
     clearInterval(ping);
     off();
+  });
+
+export const createIntent = (app: AgentCardsApp) =>
+  createControllerMethod(async (req, res) => {
+    const b = req.body;
+    const r = await requireIntents(app).createIntent(agentOf(req), {
+      amountCents: b.amountCents, maxAmountCents: b.maxAmountCents, merchant: b.merchant, merchantMatch: b.merchantMatch,
+      merchantAcceptorId: b.merchantAcceptorId, mcc: b.mcc, expiresInSeconds: b.expiresInSeconds, context: b.context, idempotencyKey: b.idempotencyKey,
+    });
+    sendJson(res, 200, r);
+  });
+
+export const getIntent = (app: AgentCardsApp) =>
+  createControllerMethod(async (req, res) => {
+    sendJson(res, 200, await requireIntents(app).getIntent(agentOf(req), req.params.spendId!));
   });

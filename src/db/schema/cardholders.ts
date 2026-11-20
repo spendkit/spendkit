@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { boolean, check, foreignKey, pgTable, primaryKey, text, unique, uniqueIndex } from "drizzle-orm/pg-core";
+import { boolean, check, foreignKey, index, integer, pgTable, primaryKey, text, unique, uniqueIndex } from "drizzle-orm/pg-core";
 import { bigintNumber, timestamptz } from "./columns.js";
 import { appDeveloper } from "./developers.js";
 
@@ -65,7 +65,9 @@ export const appAgent = pgTable(
   ],
 );
 
-export const SPEND_STATUSES = ["processing", "approved", "declined", "voided"] as const;
+export const SPEND_STATUSES = ["processing", "approved", "declined", "voided", "expired"] as const;
+export const INTENT_APPROVALS = ["none", "pending", "approved"] as const;
+export const INTENT_AUTH_STATES = ["provisional", "settled"] as const;
 export type SpendStatus = (typeof SPEND_STATUSES)[number];
 
 /** Every payment attempt by an agent. idempotency_key is the agent's own key, scoped to the agent. */
@@ -86,12 +88,42 @@ export const appSpend = pgTable(
     createdAt: timestamptz("created_at").notNull().defaultNow(),
     /** The card actually charged, when it is not the user's own card (privacy mode). */
     chargeCardId: text("charge_card_id"),
+    // Spend intents (migration 014, docs/spend-intents.md). A row is an intent when expiresAt is set.
+    expiresAt: timestamptz("expires_at"),
+    /** The most an authorization may reach; the hold is this amount. */
+    maxAmountCents: bigintNumber("max_amount_cents"),
+    /** Normalised merchant name the authorization's merchantName must contain. */
+    merchantMatch: text("merchant_match"),
+    /** Exact merchantAcceptorId the authorization must carry. */
+    merchantAcceptorId: text("merchant_acceptor_id"),
+    usesAllowed: integer("uses_allowed").notNull().default(1),
+    uses: integer("uses").notNull().default(0),
+    approval: text("approval", { enum: INTENT_APPROVALS }).notNull().default("none"),
+    /** Miden cardTransactionAuthorizationId that consumed the intent. */
+    authRef: text("auth_ref"),
+    authState: text("auth_state", { enum: INTENT_AUTH_STATES }),
+    /** merchantAcceptorId of that authorization: a repeat must carry the same one. */
+    authAcceptorId: text("auth_acceptor_id"),
+    /** What has left toward the merchant for this intent so far. */
+    capturedCents: bigintNumber("captured_cents").notNull().default(0),
+    context: text("context"),
   },
   (t) => [
     unique("app_spend_card_id_agent_id_idempotency_key_key").on(t.cardId, t.agentId, t.idempotencyKey),
     foreignKey({ name: "app_spend_card_id_agent_id_fkey", columns: [t.cardId, t.agentId], foreignColumns: [appAgent.cardId, appAgent.agentId] }),
     check("app_spend_amount_cents_check", sql`${t.amountCents} > 0`),
-    check("app_spend_status_check", sql`${t.status} IN ('processing', 'approved', 'declined', 'voided')`),
+    check("app_spend_status_check", sql`${t.status} IN ('processing', 'approved', 'declined', 'voided', 'expired')`),
+    check("app_spend_approval_check", sql`${t.approval} IN ('none', 'pending', 'approved')`),
+    check("app_spend_auth_state_check", sql`${t.authState} IN ('provisional', 'settled')`),
+    check("app_spend_uses_check", sql`${t.uses} >= 0 AND ${t.uses} <= ${t.usesAllowed}`),
+    check("app_spend_captured_cents_check", sql`${t.capturedCents} >= 0`),
+    check("app_spend_context_check", sql`char_length(${t.context}) <= 500`),
+    check(
+      "app_spend_intent_check",
+      sql`${t.expiresAt} IS NULL OR (${t.maxAmountCents} IS NOT NULL AND ${t.maxAmountCents} >= ${t.amountCents} AND (${t.merchantMatch} IS NOT NULL OR ${t.merchantAcceptorId} IS NOT NULL))`,
+    ),
+    uniqueIndex("app_spend_auth_ref").on(t.authRef).where(sql`${t.authRef} IS NOT NULL`),
+    index("app_spend_open_intents").on(t.cardId, t.expiresAt).where(sql`${t.status} = 'processing' AND ${t.expiresAt} IS NOT NULL`),
   ],
 );
 

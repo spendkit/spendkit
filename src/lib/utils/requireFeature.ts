@@ -2,6 +2,7 @@ import type { AgentCardsApp } from "../../createApp.js";
 import type { CircleDeposits } from "../../adapters/deposits/CircleDeposits.js";
 import type { CheckoutInteractor } from "../interactors/CheckoutInteractor.js";
 import type { DeveloperInteractor } from "../interactors/DeveloperInteractor.js";
+import type { SpendIntents } from "../services/SpendIntents.js";
 import type { SwapInteractor } from "../interactors/SwapInteractor.js";
 import { notFoundError } from "../../errors.js";
 
@@ -20,6 +21,16 @@ export function requireSwaps(app: AgentCardsApp): SwapInteractor {
 export function requireDevelopers(app: AgentCardsApp): DeveloperInteractor {
   if (!app.developers) throw notFoundError("the developer API is not enabled on this server");
   return app.developers;
+}
+
+export function requireIntents(app: AgentCardsApp): SpendIntents {
+  if (!app.intents) throw notFoundError("spend intents are not enabled on this server");
+  return app.intents;
+}
+
+export function requireMidenCallback(app: AgentCardsApp): SpendIntents {
+  if (!app.intents || !app.midenCallbackEnabled) throw notFoundError("not found");
+  return app.intents;
 }
 
 export function requireCircleDeposits(app: AgentCardsApp): CircleDeposits {
