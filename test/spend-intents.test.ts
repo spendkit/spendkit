@@ -214,6 +214,29 @@ test("concurrent authorizations for two agents' intents on the shared card both 
   assert.equal(alerts.length, 0);
 });
 
+test("an authorization that arrives while another decision holds the card waits for it instead of skipping intents", { skip }, async () => {
+  // Deterministic overlap: a second connection holds exactly the locks an in-flight decision on this card holds
+  // (the card row and every open intent row), and the authorization is sent while they are held. Waiting approves;
+  // skipping locked intent rows would see none and decline 119 as a false bypass.
+  const { pool, intents, alerts, bal } = await setup();
+  await intents.createIntent(A1, { amountCents: 1000, merchant: "Acme" });
+  await intents.createIntent(A2, { amountCents: 2000, merchant: "Globex" });
+  const holder = await pool.connect();
+  try {
+    await holder.query("BEGIN");
+    await holder.query("SELECT card_id FROM app_card WHERE card_id = 'c1' FOR UPDATE");
+    await holder.query("SELECT spend_id FROM app_spend WHERE card_id = 'c1' FOR UPDATE");
+    const pending = call(intents, event({ transactionAmount: 20, merchantName: "GLOBEX" }));
+    await new Promise((r) => setTimeout(r, 300));
+    await holder.query("COMMIT");
+    assert.equal(code(await pending), "000");
+  } finally {
+    holder.release();
+  }
+  assert.equal(await bal(accounts.merchant()), 2000);
+  assert.equal(alerts.length, 0);
+});
+
 test("a repeated authorization is free only when it is the same authorization on the same card", { skip }, async () => {
   const { intents, pool, bal } = await setup();
   await intents.createIntent(A1, { amountCents: 1000, merchant: "Acme" });
