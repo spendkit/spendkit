@@ -72,8 +72,9 @@ Agents paying hosted checkouts. Every real checkout is paid with a one-time card
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `APP_ENV` | unset (sandbox) | `production` is the only way to use a non-sandbox Miden host. It requires `CARD_PROVIDER=miden` and https Miden URLs, and refuses to start with `ALLOW_SIMULATED_DEPOSITS=1` or `SWAP_STRIPE_TEST_CARD=1` |
+| `APP_ENV` | unset (sandbox) | `production` is the only way to use a non-sandbox Miden host. It requires `CARD_PROVIDER=miden`, https Miden URLs and `TIER_LIMITS`, and refuses to start with `ALLOW_SIMULATED_DEPOSITS=1` or `SWAP_STRIPE_TEST_CARD=1` |
 | `MIDEN_WALLET_MIN_USD` | `100` in production, off in sandbox | Low-balance alert level, in dollars. Checked every minute; alerts (log and `ALERT_WEBHOOK_URL`) when the Miden USD wallet's available balance is below it, again hourly while it stays low, and once on recovery. Set it above a day's expected top-ups, so there is time to fund the wallet by hand before top-ups fail |
+| `TIER_LIMITS` | the placeholder caps in `src/lib/services/tiers.ts` in sandbox; **required** in production | JSON tier caps in cents, laid over the defaults field by field, e.g. `{"quick":{"perTransactionCents":2500,"dailyCents":5000,"lifetimeFundedCents":25000},"full":{...}}`. Read at startup. A card's limits at Miden are copied from its tier when it is issued, so a change applies to cards issued afterwards; cards already issued keep their limits. Refused if a per-payment cap exceeds the daily cap, the daily cap exceeds the lifetime cap, or a quick cap exceeds the full one |
 | `ALERT_WEBHOOK_URL` | none | Slack-compatible webhook that gets `{ text }` for low balance, Circle webhook 5xx, reconcile errors and stuck top-ups |
 | `STUCK_FUNDING_MINUTES` | `15` | Minutes a top-up may sit in `reserved` before it alerts |
 
