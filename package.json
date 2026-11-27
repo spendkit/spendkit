@@ -50,7 +50,7 @@
     "@simplewebauthn/server": "^14.1.0",
     "drizzle-orm": "0.45.4",
     "pg": "^8.23.1",
-    "viem": "^2.57.17",
+    "viem": "^2.58.6",
     "zod": "^4.6.7"
   },
   "optionalDependencies": {
